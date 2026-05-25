@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unified-ocr-app"
+version = "0.2.0"
+description = "Local OCR, LLM post-processing, document export, and Google Drive organization app."
+readme = "README.md"
+license = { text = "AGPL-3.0-only" }
+requires-python = ">=3.10,<3.14"
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: Microsoft :: Windows",
+]
+dependencies = [
+    "customtkinter==5.2.2",
+    "requests>=2.31",
+    "PyMuPDF>=1.24",
+    "pdf2image>=1.16.3",
+    "ocrmypdf>=16.0",
+    "docling>=2.0",
+    "watchdog>=3.0.0",
+    "python-docx>=1.1.2",
+    "pydantic>=2.0",
+    "rich>=13.0",
+    "google-api-python-client",
+    "google-auth-httplib2",
+    "google-auth-oauthlib",
+    "pystray>=0.19.5",
+    "pillow-heif>=1.0",
+    "litellm>=1.80.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+unified-ocr = "app:main"
+
+[tool.setuptools]
+py-modules = ["app"]
+packages = ["core", "core.cloud", "core.llm", "core.ocr", "ui"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", ".."]
+addopts = "-q"

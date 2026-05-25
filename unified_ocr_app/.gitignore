@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local runtime data
+settings.json
+llm_config.yaml
+folder_registry.json
+folder_registry.backup.json
+google_drive_token.json
+token.json
+credentials.json
+client_secret*.json
+logs/
+temp_work/
+cache.db
+
+# Secrets and local environment
+.env
+.env.*
+*.key
+*.pem
+
+# Generated documents and scratch files
+test_temp.pdf
+*.tmp
+~$*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
