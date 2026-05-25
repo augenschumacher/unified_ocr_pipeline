@@ -44,18 +44,18 @@ def test_resolve_path_to_folder_id_existing(mock_build):
     mock_build.return_value = mock_service
     
     # Mock folder list queries:
-    # 1. Natalia exists under root -> ID 'natalia_id'
-    # 2. Schule exists under 'natalia_id' -> ID 'schule_id'
+    # 1. Laura exists under root -> ID 'laura_id'
+    # 2. Schule exists under 'laura_id' -> ID 'schule_id'
     mock_list = MagicMock()
     mock_service.files().list.return_value = mock_list
     
     mock_list.execute.side_effect = [
-        {"files": [{"id": "natalia_id", "name": "Natalia"}]},
+        {"files": [{"id": "laura_id", "name": "Laura"}]},
         {"files": [{"id": "schule_id", "name": "Schule"}]}
     ]
     
     client = GoogleDriveClient()
-    folder_id = client._resolve_path_to_folder_id(mock_service, "Natalia/Schule")
+    folder_id = client._resolve_path_to_folder_id(mock_service, "Laura/Schule")
     assert folder_id == "schule_id"
     assert mock_service.files().create.call_count == 0
 
@@ -73,12 +73,12 @@ def test_resolve_path_to_folder_id_create(mock_build):
     mock_create = MagicMock()
     mock_service.files().create.return_value = mock_create
     mock_create.execute.side_effect = [
-        {"id": "new_natalia_id"},
+        {"id": "new_laura_id"},
         {"id": "new_schule_id"}
     ]
     
     client = GoogleDriveClient()
-    folder_id = client._resolve_path_to_folder_id(mock_service, "Natalia/Schule")
+    folder_id = client._resolve_path_to_folder_id(mock_service, "Laura/Schule")
     
     assert folder_id == "new_schule_id"
     assert mock_service.files().create.call_count == 2
@@ -106,7 +106,7 @@ def test_upload_file_new(mock_resolve, mock_get_service, mock_media):
         local_file.write_text("dummy pdf", encoding="utf-8")
         
         client = GoogleDriveClient()
-        file_id = client.upload_file("dummy_token.json", str(local_file), "Natalia/Schule")
+        file_id = client.upload_file("dummy_token.json", str(local_file), "Laura/Schule")
         
         assert file_id == "new_file_id"
         mock_service.files().create.assert_called_once()
@@ -135,7 +135,7 @@ def test_upload_file_update_existing(mock_resolve, mock_get_service, mock_media)
         local_file.write_text("dummy pdf", encoding="utf-8")
         
         client = GoogleDriveClient()
-        file_id = client.upload_file("dummy_token.json", str(local_file), "Natalia/Schule")
+        file_id = client.upload_file("dummy_token.json", str(local_file), "Laura/Schule")
         
         assert file_id == "existing_file_id"
         mock_service.files().create.assert_not_called()
@@ -159,18 +159,18 @@ def test_ensure_folder_path_creates_and_returns_path_ids():
     mock_create = MagicMock()
     mock_service.files().create.return_value = mock_create
     mock_create.execute.side_effect = [
-        {"id": "fabio_id"},
+        {"id": "jan_id"},
         {"id": "gesundheit_id"},
     ]
 
     client = GoogleDriveClient()
-    result = client.ensure_folder_path(mock_service, "Fabio/Gesundheit")
+    result = client.ensure_folder_path(mock_service, "Jan/Gesundheit")
 
     assert result["folder_id"] == "gesundheit_id"
-    assert result["created"] == ["Fabio", "Fabio/Gesundheit"]
+    assert result["created"] == ["Jan", "Jan/Gesundheit"]
     assert result["path_ids"] == {
-        "Fabio": "fabio_id",
-        "Fabio/Gesundheit": "gesundheit_id",
+        "Jan": "jan_id",
+        "Jan/Gesundheit": "gesundheit_id",
     }
 
 
@@ -180,13 +180,13 @@ def test_ensure_folder_path_reports_duplicate_conflict():
     mock_service.files().list.return_value = mock_list
     mock_list.execute.return_value = {
         "files": [
-            {"id": "folder_1", "name": "Fabio"},
-            {"id": "folder_2", "name": "Fabio"},
+            {"id": "folder_1", "name": "Jan"},
+            {"id": "folder_2", "name": "Jan"},
         ]
     }
 
     client = GoogleDriveClient()
-    result = client.ensure_folder_path(mock_service, "Fabio")
+    result = client.ensure_folder_path(mock_service, "Jan")
 
     assert result["folder_id"] == "folder_1"
     assert result["conflicts"]

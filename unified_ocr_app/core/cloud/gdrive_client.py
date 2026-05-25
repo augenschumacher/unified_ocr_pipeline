@@ -206,7 +206,7 @@ class GoogleDriveClient:
         return updated.get("id")
 
     def _resolve_path_to_folder_id(self, service, relative_path: str) -> str:
-        """Resolves a relative path (e.g. 'Natalia/Auto') to a Google Drive folder ID, creating folders as needed."""
+        """Resolves a relative path (e.g. 'Laura/Auto') to a Google Drive folder ID, creating folders as needed."""
         if not relative_path or relative_path in [".", "/"]:
             return 'root'
 

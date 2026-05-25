@@ -327,10 +327,10 @@ class TestFolderRegistry(unittest.TestCase):
     def test_add_path(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             reg = FolderRegistry(Path(tmpdir))
-            reg.add_person("Fabio")
+            reg.add_person("Jan")
             reg.add_person("Charlotte")
-            self.assertTrue(reg.add_path("Fabio/Auto"))
-            self.assertFalse(reg.add_path("Fabio/Auto"))
+            self.assertTrue(reg.add_path("Jan/Auto"))
+            self.assertFalse(reg.add_path("Jan/Auto"))
             self.assertTrue(reg.add_path("Charlotte/Hobby"))
             self.assertIn("Charlotte/Hobby", reg.get_known_paths())
             self.assertFalse(reg.add_path("NewPerson/Kategorie"))
@@ -339,9 +339,9 @@ class TestFolderRegistry(unittest.TestCase):
     def test_add_path_casing_and_invalid_main(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             reg = FolderRegistry(Path(tmpdir))
-            reg.add_person("Fabio")
-            self.assertTrue(reg.add_path("fabio/test"))
-            self.assertIn("Fabio/test", reg.get_known_paths())
+            reg.add_person("Jan")
+            self.assertTrue(reg.add_path("jan/test"))
+            self.assertIn("Jan/test", reg.get_known_paths())
             self.assertFalse(reg.add_path("invalid/path"))
             self.assertNotIn("invalid/path", reg.get_known_paths())
 
@@ -349,27 +349,27 @@ class TestFolderRegistry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             reg = FolderRegistry(Path(tmpdir))
             tree = {
-                "Fabio": {
+                "Jan": {
                     "Auto": {},
                     "Arbeit": {
                         "Projekte": {}
                     }
                 },
-                "Natalia": {}
+                "Laura": {}
             }
             reg.save_tree(tree)
             
             # Check saved structures
-            self.assertIn("Fabio", reg.get_persons())
-            self.assertIn("Natalia", reg.get_persons())
-            self.assertIn("Fabio/Auto", reg.get_known_paths())
-            self.assertIn("Fabio/Arbeit/Projekte", reg.get_known_paths())
+            self.assertIn("Jan", reg.get_persons())
+            self.assertIn("Laura", reg.get_persons())
+            self.assertIn("Jan/Auto", reg.get_known_paths())
+            self.assertIn("Jan/Arbeit/Projekte", reg.get_known_paths())
             
             # Retrieve tree and check equality
             loaded_tree = reg.get_tree()
-            self.assertEqual(loaded_tree["Fabio"]["Auto"], {})
-            self.assertEqual(loaded_tree["Fabio"]["Arbeit"]["Projekte"], {})
-            self.assertEqual(loaded_tree["Natalia"], {})
+            self.assertEqual(loaded_tree["Jan"]["Auto"], {})
+            self.assertEqual(loaded_tree["Jan"]["Arbeit"]["Projekte"], {})
+            self.assertEqual(loaded_tree["Laura"], {})
 
 
 class TestDocumentOrganizer(unittest.TestCase):
@@ -391,9 +391,9 @@ class TestDocumentOrganizer(unittest.TestCase):
             other_file.write_text("other-content", encoding="utf-8")
             
             organizer = DocumentOrganizer(final_dir)
-            moved = organizer.organize("2026-05-21_Testdoc_Rechnung", "Fabio/Rechnungen")
+            moved = organizer.organize("2026-05-21_Testdoc_Rechnung", "Jan/Rechnungen")
             
-            target_dir = final_dir / "Fabio/Rechnungen"
+            target_dir = final_dir / "Jan/Rechnungen"
             self.assertTrue((target_dir / "2026-05-21_Testdoc_Rechnung.pdf").exists())
             self.assertTrue((target_dir / "2026-05-21_Testdoc_Rechnung.txt").exists())
             self.assertFalse((target_dir / "2026-05-21_Testdoc_Rechnung_quality_report.json").exists())
@@ -413,11 +413,11 @@ class TestClassifier(unittest.TestCase):
                 self.analysis_model = "mock-model"
                 self.fusion_model = None
             def query(self, model, system_prompt, user_prompt, think=False, **kwargs):
-                return '{"recommended_path": "Fabio/Auto", "is_new": false}'
+                return '{"recommended_path": "Jan/Auto", "is_new": false}'
                 
-        known = ["Fabio/Auto", "Sonstiges"]
-        res = classify_document("Some fused text about Auto repair", {}, known, MockLLM(), ["Fabio", "Sonstiges"])
-        self.assertEqual(res["recommended_path"], "Fabio/Auto")
+        known = ["Jan/Auto", "Sonstiges"]
+        res = classify_document("Some fused text about Auto repair", {}, known, MockLLM(), ["Jan", "Sonstiges"])
+        self.assertEqual(res["recommended_path"], "Jan/Auto")
         self.assertFalse(res["is_new"])
 
     def test_classify_new_path(self):
@@ -426,11 +426,11 @@ class TestClassifier(unittest.TestCase):
                 self.analysis_model = "mock-model"
                 self.fusion_model = None
             def query(self, model, system_prompt, user_prompt, think=False, **kwargs):
-                return '{"recommended_path": "Fabio\\\\Hobby", "is_new": true}'
+                return '{"recommended_path": "Jan\\\\Hobby", "is_new": true}'
                 
-        known = ["Fabio/Auto", "Sonstiges"]
-        res = classify_document("Some fused text about painting hobby", {}, known, MockLLM(), ["Fabio", "Sonstiges"])
-        self.assertEqual(res["recommended_path"], "Fabio/Hobby")
+        known = ["Jan/Auto", "Sonstiges"]
+        res = classify_document("Some fused text about painting hobby", {}, known, MockLLM(), ["Jan", "Sonstiges"])
+        self.assertEqual(res["recommended_path"], "Jan/Hobby")
         self.assertTrue(res["is_new"])
 
 
@@ -591,11 +591,11 @@ class TestPipelineCallbacksAndReview(unittest.TestCase):
             
             from core.cloud.folder_registry import FolderRegistry
             reg = FolderRegistry(tmpdir_path)
-            reg.add_person("Fabio")
+            reg.add_person("Jan")
             reg.add_person("Sonstiges")
             
             on_start_mock = MagicMock()
-            review_mock = MagicMock(return_value=("edited text", {"date": "2026-05-22", "title": "Reviewed", "document_type": "Befund", "tags": "edited"}, "Reviewed_doc", "Fabio/Auto"))
+            review_mock = MagicMock(return_value=("edited text", {"date": "2026-05-22", "title": "Reviewed", "document_type": "Befund", "tags": "edited"}, "Reviewed_doc", "Jan/Auto"))
             
             orch = PipelineOrchestrator(
                 config=config,
@@ -663,7 +663,7 @@ class TestPipelineLeakage(unittest.TestCase):
             )
             
             # Pre-set _chosen_target_path to simulate a leftover manual review decision
-            orch._chosen_target_path = "Fabio/ManualPath"
+            orch._chosen_target_path = "Jan/ManualPath"
             
             orch._stage_prepare = MagicMock(return_value=Path("dummy_work.pdf"))
             orch._stage_ocrmypdf = MagicMock(return_value=(Path("dummy_ocr.pdf"), "original text"))
@@ -778,12 +778,12 @@ class TestClassifierRules(unittest.TestCase):
                 return f'{{"recommended_path": "{self.path}", "is_new": true}}'
         
         known = ["Sonstiges"]
-        # "Fabio" -> "Fabio/Sonstiges"
-        res = classify_document("text", {}, known, MockLLM("Fabio"), ["Fabio", "Sonstiges"])
-        self.assertEqual(res["recommended_path"], "Fabio/Sonstiges")
+        # "Jan" -> "Jan/Sonstiges"
+        res = classify_document("text", {}, known, MockLLM("Jan"), ["Jan", "Sonstiges"])
+        self.assertEqual(res["recommended_path"], "Jan/Sonstiges")
         
         # "Sonstiges" -> remains "Sonstiges"
-        res = classify_document("text", {}, known, MockLLM("Sonstiges"), ["Fabio", "Sonstiges"])
+        res = classify_document("text", {}, known, MockLLM("Sonstiges"), ["Jan", "Sonstiges"])
         self.assertEqual(res["recommended_path"], "Sonstiges")
 
     def test_deep_path_truncation(self):
@@ -796,8 +796,8 @@ class TestClassifierRules(unittest.TestCase):
                 return f'{{"recommended_path": "{self.path}", "is_new": true}}'
                 
         known = ["Sonstiges"]
-        res = classify_document("text", {}, known, MockLLM("Fabio/Gesundheit/Zahnarzt/Termine"), ["Fabio", "Sonstiges"])
-        self.assertEqual(res["recommended_path"], "Fabio/Gesundheit")
+        res = classify_document("text", {}, known, MockLLM("Jan/Gesundheit/Zahnarzt/Termine"), ["Jan", "Sonstiges"])
+        self.assertEqual(res["recommended_path"], "Jan/Gesundheit")
 
     def test_unrecognized_person_fallback(self):
         class MockLLM:
@@ -822,10 +822,10 @@ class TestClassifierRules(unittest.TestCase):
             def query(self, *args, **kwargs):
                 return f'{{"recommended_path": "{self.path}", "is_new": false}}'
                 
-        known = ["Fabio/Gesundheit", "Natalia/Finanzen"]
-        # Case insensitive match to "Fabio/Gesundheit"
-        res = classify_document("text", {}, known, MockLLM("fabio/gesundheit"), ["Fabio", "Natalia", "Sonstiges"])
-        self.assertEqual(res["recommended_path"], "Fabio/Gesundheit")
+        known = ["Jan/Gesundheit", "Laura/Finanzen"]
+        # Case insensitive match to "Jan/Gesundheit"
+        res = classify_document("text", {}, known, MockLLM("jan/gesundheit"), ["Jan", "Laura", "Sonstiges"])
+        self.assertEqual(res["recommended_path"], "Jan/Gesundheit")
         self.assertFalse(res["is_new"])
 
 
@@ -857,7 +857,7 @@ class TestAutoSubfolderCreation(unittest.TestCase):
             config = AppConfig(tmpdir_path)
             orch = PipelineOrchestrator(config=config, llm_client=MagicMock())
             
-            target_dir = tmpdir_path / "Fabio/Arbeit"
+            target_dir = tmpdir_path / "Jan/Arbeit"
             target_dir.mkdir(parents=True)
             
             # Create some dummy PDFs with synonym names
@@ -878,7 +878,7 @@ class TestAutoSubfolderCreation(unittest.TestCase):
             config = AppConfig(tmpdir_path)
             orch = PipelineOrchestrator(config=config, llm_client=MagicMock())
             
-            parent_path = "Fabio/Arbeit"
+            parent_path = "Jan/Arbeit"
             parent_dir = tmpdir_path / "final" / parent_path
             parent_dir.mkdir(parents=True)
             
@@ -913,20 +913,20 @@ class TestAutoSubfolderCreation(unittest.TestCase):
             
             from core.cloud.folder_registry import FolderRegistry
             reg = FolderRegistry(tmpdir_path)
-            reg.add_person("Fabio")
+            reg.add_person("Jan")
             reg.add_person("Sonstiges")
-            reg.add_path("Fabio/Arbeit")
+            reg.add_path("Jan/Arbeit")
             
             orch = PipelineOrchestrator(config=config, llm_client=MagicMock())
             
-            # Create a file in final/Fabio/Arbeit to simulate 1 existing file
-            target_dir = tmpdir_path / "final/Fabio/Arbeit"
+            # Create a file in final/Jan/Arbeit to simulate 1 existing file
+            target_dir = tmpdir_path / "final/Jan/Arbeit"
             target_dir.mkdir(parents=True)
             (target_dir / "2026-01-01_Entgeldbescheinigung.pdf").write_bytes(b"%PDF-1.4")
             
             # We process a new file with document_type "Lohnabrechnung" (synonym)
-            # LLM returns target path "Fabio/Arbeit"
-            orch._chosen_target_path = "Fabio/Arbeit"
+            # LLM returns target path "Jan/Arbeit"
+            orch._chosen_target_path = "Jan/Arbeit"
             
             # Create the file in final_dir that needs organizing
             final_name = "2026-02-01_Entgelt_Lohnabrechnung"
@@ -937,8 +937,8 @@ class TestAutoSubfolderCreation(unittest.TestCase):
             metadata = {"document_type": "Lohnabrechnung"}
             moved_files, target_path = orch._stage_organize("text", metadata, final_name)
             
-            # Target path should have been updated to Fabio/Arbeit/Lohnabrechnung
-            self.assertEqual(target_path, "Fabio/Arbeit/Lohnabrechnung")
+            # Target path should have been updated to Jan/Arbeit/Lohnabrechnung
+            self.assertEqual(target_path, "Jan/Arbeit/Lohnabrechnung")
             
             # New file should be moved to subfolder
             sub_dir = target_dir / "Lohnabrechnung"
@@ -1005,9 +1005,9 @@ class TestGDriveConsolidation(unittest.TestCase):
         
         # Resolving path returns dummy folder IDs
         def mock_resolve(service, path):
-            if path == "Fabio/Arbeit":
+            if path == "Jan/Arbeit":
                 return "parent_id_123"
-            elif path == "Fabio/Arbeit/Lohnabrechnung":
+            elif path == "Jan/Arbeit/Lohnabrechnung":
                 return "sub_id_456"
             return "root"
         mock_client._resolve_path_to_folder_id.side_effect = mock_resolve
@@ -1027,7 +1027,7 @@ class TestGDriveConsolidation(unittest.TestCase):
             orch = PipelineOrchestrator(config=config, llm_client=MagicMock(), gdrive_enabled=True)
             
             # Execute GDrive consolidation
-            orch._consolidate_existing_documents_gdrive("Fabio/Arbeit", "Lohnabrechnung")
+            orch._consolidate_existing_documents_gdrive("Jan/Arbeit", "Lohnabrechnung")
             
             # Assertions:
             # list should have been called
@@ -1772,14 +1772,14 @@ class TestDocxInputMode(unittest.TestCase):
             
             from core.cloud.folder_registry import FolderRegistry
             reg = FolderRegistry(tmpdir_path)
-            reg.add_person("Fabio")
+            reg.add_person("Jan")
             reg.add_person("Sonstiges")
             
             # Setup prompt callback
-            prompt_mock = MagicMock(return_value="Fabio/BrandNewFolder")
+            prompt_mock = MagicMock(return_value="Jan/BrandNewFolder")
             
             mock_llm = MagicMock()
-            mock_llm.run_classification.return_value = {"recommended_path": "Fabio/BrandNewFolder", "is_new": True}
+            mock_llm.run_classification.return_value = {"recommended_path": "Jan/BrandNewFolder", "is_new": True}
             
             orch = PipelineOrchestrator(
                 config=config,
@@ -1810,13 +1810,13 @@ class TestDocxInputMode(unittest.TestCase):
             orch.process_deferred_organizations()
             
             # Now the prompt mock should be called!
-            prompt_mock.assert_called_once_with("Fabio/BrandNewFolder")
+            prompt_mock.assert_called_once_with("Jan/BrandNewFolder")
             
             # Staging folder should be cleaned up / empty
             self.assertFalse(staging_dir.exists())
             
             # Verify the file is now in the final folder
-            final_dest = config.final_dir / "Fabio/BrandNewFolder" / f"{final_name}.pdf"
+            final_dest = config.final_dir / "Jan/BrandNewFolder" / f"{final_name}.pdf"
             self.assertTrue(final_dest.exists())
             self.assertEqual(final_dest.read_text(encoding="utf-8"), "pdf-content")
 

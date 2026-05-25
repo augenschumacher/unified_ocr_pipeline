@@ -192,7 +192,7 @@ Pruefung vor jedem Release bleibt trotzdem sinnvoll.
 
 ## Lizenz
 
-Copyright (C) 2026 Jan Beispiel Schumacher.
+Copyright (C) 2026 Fabio Schumacher.
 
 Dieses Projekt ist freie Software unter der GNU Affero General Public License
 v3.0 only, siehe [unified_ocr_app/LICENSE](unified_ocr_app/LICENSE).
