@@ -1,4 +1,4 @@
-﻿import threading
+import threading
 import subprocess
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
@@ -690,13 +690,37 @@ class App(ctk.CTk):
             # 2. Google
             google_key = providers.get("google", {}).get("api_key", "").strip()
             if google_key:
+                gemini_models = []
+                try:
+                    import requests as _req
+                    resp = _req.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={google_key}", timeout=5)
+                    if resp.ok:
+                        data = resp.json()
+                        for m in data.get("models", []):
+                            name = m.get("name", "")
+                            # Nur generative Text- und Vision-Modelle auflisten
+                            if "gemini" in name.lower() and not any(x in name.lower() for x in ("embedding", "robotics", "audio", "tts", "aqa")):
+                                clean_name = name
+                                if clean_name.startswith("models/"):
+                                    clean_name = clean_name[7:]
+                                gemini_models.append(f"gemini/{clean_name}")
+                        gemini_models.sort(reverse=True)
+                except Exception as e:
+                    self._log(f"Google API Fehler (nutze Fallback-Modellliste): {e}")
+
+                if not gemini_models:
+                    gemini_models = [
+                        "gemini/gemini-3.5-flash",
+                        "gemini/gemini-3.1-flash-lite",
+                        "gemini/gemini-2.5-flash",
+                        "gemini/gemini-2.5-flash-lite",
+                        "gemini/gemini-2.5-pro",
+                        "gemini/gemini-2.0-flash",
+                        "gemini/gemini-2.0-flash-lite",
+                    ]
+                
                 final_models.append("--- GOOGLE ---")
-                final_models.extend([
-                    "gemini/gemini-2.5-flash",
-                    "gemini/gemini-2.5-flash-lite",
-                    "gemini/gemini-2.5-pro",
-                    "gemini/gemini-2.0-flash",
-                ])
+                final_models.extend(gemini_models)
 
             # 3. OpenAI
             openai_key = providers.get("openai", {}).get("api_key", "").strip()
@@ -747,9 +771,9 @@ class App(ctk.CTk):
 
         defaults = {
             "glm_ocr":  best("glm-ocr") if best("glm-ocr") != "Keins" else "Keins",
-            "vision":   best("vl", "vision", "gemini-2.5-flash", "gpt-4o"),
-            "fusion":   best("qwen3.6", "qwen", "gemini-2.5-flash-lite", "gpt-4o-mini"),
-            "analysis": best("qwen3.6", "qwen", "gemini-2.5-flash-lite", "gpt-4o-mini"),
+            "vision":   best("vl", "vision", "gemini-3.5-flash", "gemini-2.5-flash", "gpt-4o"),
+            "fusion":   best("qwen3.6", "qwen", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gpt-4o-mini"),
+            "analysis": best("qwen3.6", "qwen", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gpt-4o-mini"),
         }
 
         def pick(key, var_name):
