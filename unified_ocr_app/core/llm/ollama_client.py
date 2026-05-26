@@ -280,7 +280,8 @@ class OllamaClient:
         think:         bool = False,
         max_tokens:    int  = 4096,
         raw_text:      str  = None,
-        prompt_version: str = None
+        prompt_version: str = None,
+        cache_input         = None
     ) -> str:
         """
         Sendet eine Chat-Anfrage via LiteLLM (Streaming, bis zu 3 Versuche).
@@ -298,10 +299,18 @@ class OllamaClient:
         # Schlüssel generieren aus raw_text, Modellname und Prompt-Version
         raw_text_content = raw_text if raw_text is not None else user_prompt
         p_ver = str(prompt_version if prompt_version is not None else getattr(self, "prompt_version", 1))
+        cache_key = None
+        if cache_input is not None:
+            from core.cache import CacheInput, build_cache_key
+
+            payload = cache_input.to_payload() if isinstance(cache_input, CacheInput) else dict(cache_input)
+            payload["model"] = model
+            payload["prompt_version"] = p_ver
+            cache_key = build_cache_key(payload)
 
         # Falls force_pipeline = False, Cache prüfen
         if not getattr(self, "force_pipeline", False):
-            cached_res = self.cache.get(raw_text_content, model, p_ver)
+            cached_res = self.cache.get_by_key(cache_key, model) if cache_key else self.cache.get(raw_text_content, model, p_ver)
             if cached_res is not None:
                 self._log(f"    [Cache HIT] Verwende gecachtes Ergebnis für Modell: {model}")
                 if self.stream_callback:
@@ -409,7 +418,10 @@ class OllamaClient:
                     
                     # Bei erfolgreicher Abfrage Cache befüllen / aktualisieren
                     if result:
-                        self.cache.set(raw_text_content, model, p_ver, result)
+                        if cache_key:
+                            self.cache.set_by_key(cache_key, model, p_ver, result, raw_text=raw_text_content)
+                        else:
+                            self.cache.set(raw_text_content, model, p_ver, result)
                         
                     mode = "🧠 Thinking" if think else "⚡ Standard"
                     self._log(f"    → Fertig [{mode}].")

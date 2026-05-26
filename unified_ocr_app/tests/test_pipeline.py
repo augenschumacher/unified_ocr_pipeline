@@ -1305,7 +1305,7 @@ class TestImageDescriptionPipeline(unittest.TestCase):
             args = orch._stage_export.call_args[0]
             self.assertEqual(args[1], {1: "fused page 1", 2: "fused page 2"})
             
-            # Scenario B: Quality correction happens -> flattens to page 1
+            # Scenario B: Quality correction happens -> PDF overlay remains page-by-page.
             orch._stage_export.reset_mock()
             orch._stage_quality = MagicMock(side_effect=lambda o, d, v, f: ("entirely corrected text", {"warnings": []}))
             
@@ -1315,7 +1315,8 @@ class TestImageDescriptionPipeline(unittest.TestCase):
             
             orch._stage_export.assert_called_once()
             args = orch._stage_export.call_args[0]
-            self.assertEqual(args[1], {1: "entirely corrected text"})
+            self.assertEqual(args[1], {1: "fused page 1", 2: "fused page 2"})
+            self.assertEqual(args[2], "entirely corrected text")
 
 
 class TestLargePdfMode(unittest.TestCase):
@@ -1454,8 +1455,8 @@ class TestLargePdfMode(unittest.TestCase):
             
             orch._stage_export.assert_called_once()
             call_args = orch._stage_export.call_args[0]
-            # Since large_pdf_reduced is False, it should use work_pdf as the first argument, not ocr_pdf
-            self.assertEqual(call_args[0], dummy_work_pdf)
+            # Detailed PDF export should use the OCRmyPDF output when available.
+            self.assertEqual(call_args[0], dummy_ocr_pdf)
             self.assertEqual(call_args[1], {1: "fused page 1"})
 
     @patch("core.pipeline.shutil.move")
@@ -1516,7 +1517,7 @@ class TestLargePdfMode(unittest.TestCase):
             orch._stage_extract_pages.assert_called_once()
             orch._stage_export.assert_called_once()
             call_args = orch._stage_export.call_args[0]
-            self.assertEqual(call_args[0], dummy_work_pdf)
+            self.assertEqual(call_args[0], dummy_ocr_pdf)
 
 
 class TestDocxInputMode(unittest.TestCase):

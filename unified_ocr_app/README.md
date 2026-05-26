@@ -240,3 +240,4 @@ Vor einem Release:
 - LLM-Ergebnisse muessen bei wichtigen medizinischen, finanziellen oder rechtlichen Dokumenten manuell geprueft werden.
 - Cloud- und API-Provider koennen Kosten verursachen oder Kontingente begrenzen.
 - Google Drive Sync erstellt fehlende Ordner und speichert Drive-IDs, loescht aber keine Drive-Ordner.
+- Wenn die dokumentweite Qualitaetskorrektur Text veraendert, bleibt der PDF-Textlayer seitenweise aus der urspruenglichen Fusion erhalten; der korrigierte Gesamttext wird fuer TXT/DOCX/Metadaten genutzt.

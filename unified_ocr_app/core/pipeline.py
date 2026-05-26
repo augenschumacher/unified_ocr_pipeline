@@ -1,4 +1,4 @@
-import shutil
+﻿import shutil
 import re
 import uuid
 import json
@@ -42,14 +42,14 @@ class PipelineOrchestrator:
     Koordiniert alle Stufen der OCR-Pipeline für eine einzelne Datei.
 
     Ablauf:
-        Stage 1  → Datei-Vorbereitung + OCRmyPDF
-        Stage 2  → Docling + Seitenextraktion (PyMuPDF)
-        Stage 2b → GLM-OCR (optionales spezialisiertes Dokumenten-OCR)
-        Stage 3  → Vision-Review per Seite (Qwen3-VL o.ä.)
-        Stage 4  → Text-Fusion per Seite
-        Stage 5  → Qualitätskontrolle + Self-Correction Loop
-        Stage 6  → Metadaten-Analyse
-        Stage 7  → Export (PDF / TXT / DOCX)
+        Stage 1  â†’ Datei-Vorbereitung + OCRmyPDF
+        Stage 2  â†’ Docling + Seitenextraktion (PyMuPDF)
+        Stage 2b â†’ GLM-OCR (optionales spezialisiertes Dokumenten-OCR)
+        Stage 3  â†’ Vision-Review per Seite (Qwen3-VL o.ä.)
+        Stage 4  â†’ Text-Fusion per Seite
+        Stage 5  â†’ Qualitätskontrolle + Self-Correction Loop
+        Stage 6  â†’ Metadaten-Analyse
+        Stage 7  â†’ Export (PDF / TXT / DOCX)
     """
 
     def __init__(
@@ -110,7 +110,7 @@ class PipelineOrchestrator:
     # ------------------------------------------------------------------ #
 
     def _stage_prepare(self, original_path: Path, work_dir: Path) -> Path:
-        """Konvertiert Bild → PDF oder kopiert PDF ins Arbeitsverzeichnis."""
+        """Konvertiert Bild â†’ PDF oder kopiert PDF ins Arbeitsverzeichnis."""
         work_pdf = work_dir / f"{original_path.stem}_work.pdf"
         suffix = original_path.suffix.lower()
         if suffix in (".png", ".jpg", ".jpeg", ".heic"):
@@ -263,6 +263,13 @@ class PipelineOrchestrator:
     #  Stage 4: Text-Fusion per Seite                                     #
     # ------------------------------------------------------------------ #
 
+    def _best_page_text_source(self, *, vision_text: str = "", glm_text: str = "", docling_text: str = "", ocr_text: str = "") -> str:
+        """Return the best non-empty page source when fusion is unavailable or degraded."""
+        for text in (vision_text, glm_text, docling_text, ocr_text):
+            if text and text.strip():
+                return text
+        return ""
+
     def _stage_fusion(
         self,
         image_paths: list,
@@ -302,10 +309,24 @@ class PipelineOrchestrator:
                     is_tabular=is_tabular,
                     glm_ocr_text=glm_texts.get(page_num, "") if glm_texts else ""
                 )
-                fused[page_num] = page_fused
+                if page_fused and page_fused.strip():
+                    fused[page_num] = page_fused
+                else:
+                    fused[page_num] = self._best_page_text_source(
+                        vision_text=vision_text,
+                        glm_text=glm_text,
+                        docling_text=docling_text,
+                        ocr_text=ocr_text,
+                    )
+                    self.log(f"  -> Text-Fusion Seite {page_num}: degraded fallback verwendet (leere/deaktivierte Fusion).")
             except Exception as e:
-                self.log(f"  ⚠ Fehler bei Text-Fusion Seite {page_num}: {e}")
-                fused[page_num] = vision_text if vision_text else (docling_text if docling_text else ocr_text)
+                self.log(f"  âš  Fehler bei Text-Fusion Seite {page_num}: {e}")
+                fused[page_num] = self._best_page_text_source(
+                    vision_text=vision_text,
+                    glm_text=glm_text,
+                    docling_text=docling_text,
+                    ocr_text=ocr_text,
+                )
 
             self.report_progress(0.60 + 0.22 * (page_num / max(total_pages, 1)))
 
@@ -346,7 +367,7 @@ class PipelineOrchestrator:
         if report.get("warnings"):
             self.log(f"\n[WARNUNG] {len(report['warnings'])} Auffälligkeit(en):")
             for w in report["warnings"]:
-                self.log(f"  ⚠ {w}")
+                self.log(f"  âš  {w}")
                 logger.warning(w)
             return fused_text, report
         else:
@@ -410,6 +431,22 @@ class PipelineOrchestrator:
             quality_report,
             is_docx=is_docx,
         )
+
+    def _resolve_exported_path(self, exported_paths: dict, key: str, moved_files: list | None = None) -> Path | None:
+        """Resolve an exported artifact path after optional local organization."""
+        if not isinstance(exported_paths, dict):
+            return None
+        path = exported_paths.get(key) if exported_paths else None
+        path = Path(path) if path else None
+        if path and path.exists():
+            return path
+
+        if path and moved_files:
+            for moved in moved_files:
+                moved_path = Path(moved)
+                if moved_path.name == path.name and moved_path.exists():
+                    return moved_path
+        return path if path and path.exists() else None
 
     # ------------------------------------------------------------------ #
     #  Stage 8: Sortieren / Organize                                      #
@@ -512,7 +549,7 @@ class PipelineOrchestrator:
             
         except Exception as e:
             logger.exception("Fehler beim Sortieren des Dokuments")
-            self.log(f"⚠ Sortierung fehlgeschlagen: {e}")
+            self.log(f"âš  Sortierung fehlgeschlagen: {e}")
             return [], "Sonstiges"
 
     def _get_canonical_doc_type(self, doc_type: str) -> str:
@@ -690,7 +727,7 @@ class PipelineOrchestrator:
                         logger.error(f"Fehler bei GDrive-Konsolidierung von {filename}: {err}")
         except Exception as e:
             logger.exception("Fehler bei der Google Drive Konsolidierung")
-            self.log(f"⚠ Google Drive Konsolidierung fehlgeschlagen: {e}")
+            self.log(f"âš  Google Drive Konsolidierung fehlgeschlagen: {e}")
 
     def _stage_gdrive_upload(self, pdf_file: Path, docx_file: Path, json_file: Path, target_path: str, is_docx_input: bool = False):
         """Uploads selected files to Google Drive, reproducing the local subdirectory layout."""
@@ -702,7 +739,7 @@ class PipelineOrchestrator:
             from core.cloud.gdrive_client import GoogleDriveClient
             client = GoogleDriveClient()
             if not client.is_authenticated(self.gdrive_token_path):
-                self.log("⚠ Google Drive Upload übersprungen: Nicht authentifiziert (token.json fehlt oder abgelaufen).")
+                self.log("âš  Google Drive Upload übersprungen: Nicht authentifiziert (token.json fehlt oder abgelaufen).")
                 return
 
             upload_items = []
@@ -722,12 +759,12 @@ class PipelineOrchestrator:
                 self.log(f"  Lade hoch: {p.name} nach Google Drive Ordner '{target_path}'...")
                 try:
                     file_id = client.upload_file(self.gdrive_token_path, str(p), target_path)
-                    self.log(f"  ✓ Erfolgreich hochgeladen: {p.name} (Google Drive ID: {file_id})")
+                    self.log(f"  âœ“ Erfolgreich hochgeladen: {p.name} (Google Drive ID: {file_id})")
                 except Exception as upload_err:
-                    self.log(f"  ⚠ Fehler beim Upload von '{p.name}': {upload_err}")
+                    self.log(f"  âš  Fehler beim Upload von '{p.name}': {upload_err}")
                     logger.exception(f"Google Drive Upload-Fehler für '{p.name}'")
         except Exception as e:
-            self.log(f"⚠ Google Drive Integration fehlgeschlagen: {e}")
+            self.log(f"âš  Google Drive Integration fehlgeschlagen: {e}")
             logger.exception("Google Drive Integration Fehler")
 
     def process_deferred_organizations(self):
@@ -988,10 +1025,10 @@ class PipelineOrchestrator:
                     
                     initial_fused_text = "\n\n".join(fused_pages.values()) if fused_pages else ocr_text
                     fused_text_corrected, quality_report = self._stage_quality(ocr_text, docling_text, vision_combined, initial_fused_text)
-                    source_pdf_for_export = work_pdf
+                    source_pdf_for_export = ocr_pdf if ocr_pdf and Path(ocr_pdf).exists() else work_pdf
                     
                     if fused_text_corrected != initial_fused_text:
-                        self.log("Qualitäts-Nachkorrektur hat Text verändert. Normalisiere PDF-Overlay auf Seite 1.")
+                        self.log("Qualitaets-Nachkorrektur hat Text veraendert. PDF-Textlayer bleibt seitenweise; korrigierter Dokumenttext wird fuer TXT/DOCX/Metadaten genutzt.")
                         fused_text = fused_text_corrected
                         desc_parts = []
                         for p_num, desc in sorted(page_descriptions.items()):
@@ -1006,7 +1043,12 @@ class PipelineOrchestrator:
                                 fused_text = f"{descriptions_combined}\n\n{fused_text}"
                             else:
                                 fused_text = descriptions_combined
-                        fused_pages = {1: fused_text}
+                        for p_num, desc in page_descriptions.items():
+                            orig_fused = fused_pages.get(p_num, "").strip()
+                            if orig_fused:
+                                fused_pages[p_num] = f"[Bildbeschreibung: {desc}]\n\n{orig_fused}"
+                            else:
+                                fused_pages[p_num] = f"[Bildbeschreibung: {desc}]"
                     else:
                         for p_num, desc in page_descriptions.items():
                             orig_fused = fused_pages.get(p_num, "").strip()
@@ -1066,7 +1108,15 @@ class PipelineOrchestrator:
                     docx_mode=self.docx_mode,
                     large_pdf_reduced=self.large_pdf_reduced,
                 )
-            self._stage_export(source_pdf_for_export, fused_pages, fused_text, final_name, metadata, image_paths, quality_report, is_docx=is_docx)
+            exported_paths = self._stage_export(source_pdf_for_export, fused_pages, fused_text, final_name, metadata, image_paths, quality_report, is_docx=is_docx)
+            if not isinstance(exported_paths, dict):
+                begleit_dir = self.config.final_dir / "begleitdateien"
+                exported_paths = {
+                    "pdf": self.config.final_dir / f"{final_name}.pdf",
+                    "txt": self.config.final_dir / f"{final_name}.txt",
+                    "docx": (self.config.final_dir / f"{final_name}.docx") if is_docx else (begleit_dir / f"{final_name}.docx"),
+                    "json": begleit_dir / f"{final_name}_quality_report.json",
+                }
 
             # ── Stage 8: Sortieren / Organize ─────────────────────────────
             moved_files = []
@@ -1081,35 +1131,10 @@ class PipelineOrchestrator:
                 if self.deferred_organizations[-1]["final_name"] == final_name:
                     is_deferred = True
 
-            # Die konkreten lokalen Dateipfade für den GDrive-Upload bestimmen
-            pdf_file = None
-            docx_file = None
-            
-            if not is_deferred:
-                if is_docx:
-                    if self.organize_enabled:
-                        for f in moved_files:
-                            if Path(f).suffix.lower() == ".docx":
-                                docx_file = Path(f)
-                                break
-                    else:
-                        p = self.config.final_dir / f"{final_name}.docx"
-                        if p.exists():
-                            docx_file = p
-                else:
-                    if self.organize_enabled:
-                        for f in moved_files:
-                            if Path(f).suffix.lower() == ".pdf":
-                                pdf_file = Path(f)
-                                break
-                    else:
-                        p = self.config.final_dir / f"{final_name}.pdf"
-                        if p.exists():
-                            pdf_file = p
-                    
-                    docx_file = self.config.final_dir / "begleitdateien" / f"{final_name}.docx"
-
-            json_file = self.config.final_dir / "begleitdateien" / f"{final_name}_quality_report.json"
+            # Die konkreten lokalen Dateipfade fuer Upload und Cleanup aus dem Export-Ergebnis bestimmen.
+            pdf_file = self._resolve_exported_path(exported_paths, "pdf", moved_files) if not is_deferred else None
+            docx_file = self._resolve_exported_path(exported_paths, "docx", moved_files) if not is_deferred else None
+            json_file = self._resolve_exported_path(exported_paths, "json", moved_files) if not is_deferred else None
 
             # ── Google Drive Upload ───────────────────────────────────────
             if self.gdrive_enabled and not is_deferred:
