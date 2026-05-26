@@ -1,22 +1,22 @@
-﻿"""
-tasks.py â€“ Pipeline-Tasks (Domain-Logik aller LLM-Aufrufe)
+"""
+tasks.py – Pipeline-Tasks (Domain-Logik aller LLM-Aufrufe)
 
 LLMClient erweitert OllamaClient um die vier Pipeline-Methoden:
-    run_glm_ocr()       â†’ Phase 2b: Spezialisiertes Dokumenten-OCR
-    run_vision_review() â†’ Phase 3:  Bild-gestÃ¼tzter OCR-Review
-    run_page_fusion()   â†’ Phase 4:  Multi-Quellen Text-Fusion
-    run_analysis()      â†’ Phase 6:  Metadaten-Extraktion als JSON
+    run_glm_ocr()       → Phase 2b: Spezialisiertes Dokumenten-OCR
+    run_vision_review() → Phase 3:  Bild-gestützter OCR-Review
+    run_page_fusion()   → Phase 4:  Multi-Quellen Text-Fusion
+    run_analysis()      → Phase 6:  Metadaten-Extraktion als JSON
 
-Jede Methode ist ausschlieÃŸlich fÃ¼r ihre eigene DomÃ¤nenlogik zustÃ¤ndig.
-HTTP-Kommunikation wird an OllamaClient.query() delegiert unter Ãœbergabe
-von `raw_text` zur caching-spezifischen MD5-Signierung.
+Jede Methode ist ausschließlich für ihre eigene Domänenlogik zuständig.
+HTTP-Kommunikation wird an OllamaClient.query() delegiert. Das Caching
+erfolgt über strukturierte CacheInput-Objekte mit SHA-256-basierten v2-Keys.
 """
 
 import json
 from .ollama_client import OllamaClient
 from core.cache import CacheInput, sha256_file, sha256_text
 
-# EingabelÃ¤ngenbegrenzung (Zeichen) â€“ verhindert Context-Overflow
+# Eingabelängenbegrenzung (Zeichen) – verhindert Context-Overflow
 _MAX_DOCLING_CHARS = 8_000
 _MAX_OCR_CHARS     = 6_000
 _MAX_PREV_CHARS    = 4_000
@@ -25,7 +25,7 @@ _MAX_PREV_CHARS    = 4_000
 class LLMClient(OllamaClient):
     """
     Erweiterung von OllamaClient um alle Pipeline-spezifischen Tasks.
-    UnterstÃ¼tzt Caching-Weiterleitung und force_pipeline Bypass.
+    Unterstützt Caching-Weiterleitung und force_pipeline Bypass.
     """
 
     def __init__(
@@ -53,13 +53,13 @@ class LLMClient(OllamaClient):
         self.force_pipeline  = force_pipeline
 
     # ------------------------------------------------------------------ #
-    #  Phase 2b â€“ GLM-OCR                                                  #
+    #  Phase 2b – GLM-OCR                                                  #
     # ------------------------------------------------------------------ #
 
     def run_glm_ocr(self, image_path: str, page_num: int) -> str:
         """
         Spezialisiertes Dokumenten-OCR via GLM-OCR Modell.
-        Nutzt MD5 des Bildes als raw_text-Cache-SchlÃ¼ssel.
+        Nutzt SHA-256 des Bildes als image_sha256-Bestandteil des v2-Cache-Keys.
         """
         if not self.glm_ocr_model or self.glm_ocr_model in ("Keins", "", "Kein GLM-OCR"):
             return ""
@@ -67,11 +67,11 @@ class LLMClient(OllamaClient):
         img_hash = sha256_file(image_path) or f"image_{page_num}"
 
         sys_prompt = (
-            "Du bist ein prÃ¤zises OCR-System fÃ¼r Dokumentenanalyse. "
+            "Du bist ein präzises OCR-System für Dokumentenanalyse. "
             "Extrahiere ALLE Texte exakt wie sie im Dokument erscheinen. "
-            "Strukturerhalt: Tabellen als Markdown, AbsÃ¤tze als AbsÃ¤tze, Listen als Listen. "
-            "Besonders wichtig: Zahlen, BetrÃ¤ge, Datumsangaben, Codes und Sonderzeichen. "
-            "Gib NUR den extrahierten Text zurÃ¼ck. Keine Kommentare."
+            "Strukturerhalt: Tabellen als Markdown, Absätze als Absätze, Listen als Listen. "
+            "Besonders wichtig: Zahlen, Beträge, Datumsangaben, Codes und Sonderzeichen. "
+            "Gib NUR den extrahierten Text zurück. Keine Kommentare."
         )
         self._log(f"  GLM-OCR Seite {page_num}...")
         user_prompt = f"Extrahiere den vollstaendigen Text aus Seite {page_num}."
@@ -95,13 +95,13 @@ class LLMClient(OllamaClient):
             return ""   # Stiller Fallback
 
     # ------------------------------------------------------------------ #
-    #  Phase 3 â€“ Vision-Review & Bildbeschreibung                          #
+    #  Phase 3 – Vision-Review & Bildbeschreibung                          #
     # ------------------------------------------------------------------ #
 
     def run_image_description(self, image_path: str, page_num: int) -> str:
         """
         Generiert eine detaillierte Beschreibung des Bildes/der Seite.
-        Nutzt MD5 des Bildes als raw_text-Cache-SchlÃ¼ssel.
+        Nutzt SHA-256 des Bildes als image_sha256-Bestandteil des v2-Cache-Keys.
         """
         if not self.vision_model or self.vision_model == "Keins":
             return ""
@@ -109,11 +109,11 @@ class LLMClient(OllamaClient):
         img_hash = sha256_file(image_path) or f"image_desc_{page_num}"
 
         default_sys = (
-            "Du bist ein prÃ¤zises Vision-Modell zur Bildbeschreibung. "
-            "Beschreibe das Ã¼bergebene Bild detailliert auf Deutsch. "
+            "Du bist ein präzises Vision-Modell zur Bildbeschreibung. "
+            "Beschreibe das übergebene Bild detailliert auf Deutsch. "
             "Erfasse visuelle Elemente, Diagramme, Grafiken, Zeichnungen, "
             "Fotos oder handschriftliche Skizzen sowie eventuell vorhandenen kurzen Text. "
-            "Gib NUR die Beschreibung zurÃ¼ck. Keine Einleitung, kein 'Hier ist die Beschreibung'."
+            "Gib NUR die Beschreibung zurück. Keine Einleitung, kein 'Hier ist die Beschreibung'."
         )
         user_prompt = (
             f"Beschreibe den visuellen Inhalt dieser Seite (Seite {page_num}) detailliert."
@@ -138,24 +138,26 @@ class LLMClient(OllamaClient):
 
     def run_vision_review(self, image_path: str, page_markdown: str, page_num: int) -> str:
         """
-        PrÃ¼ft und korrigiert das Docling-Markdown anhand des Seitenbildes.
-        Ãœbergibt page_markdown als raw_text fÃ¼r die Caching-MD5-Generierung.
+        Prüft und korrigiert das Docling-Markdown anhand des Seitenbildes.
+        Cache-Key (v2/SHA-256) berücksichtigt Bildinhalt (image_sha256)
+        und page_markdown-Hash (source_hashes), sodass gleicher Text mit
+        unterschiedlichem Bild – oder umgekehrt – stets einen neuen Key ergibt.
         """
         if not self.vision_model or self.vision_model == "Keins":
             return ""
 
         default_sys = (
             "Du bist ein medizinischer OCR-Korrektor und Layout-Analyst. "
-            "Dir wird ein Bild einer Dokumentenseite und das vorlÃ¤ufige Markdown Ã¼bergeben. "
-            "PrÃ¼fe Tabellenstrukturen, AbsÃ¤tze und Formatierungen kritisch anhand des Bildes. "
-            "Korrigiere Fehler, ergÃ¤nze Fehlendes. "
-            "WICHTIG: Erkannte Tabellen ZWINGEND mit <table_block>...</table_block> umschlieÃŸen. "
-            "Gib NUR das korrigierte Markdown zurÃ¼ck. Keine Einleitung, keine Kommentare."
+            "Dir wird ein Bild einer Dokumentenseite und das vorläufige Markdown übergeben. "
+            "Prüfe Tabellenstrukturen, Absätze und Formatierungen kritisch anhand des Bildes. "
+            "Korrigiere Fehler, ergänze Fehlendes. "
+            "WICHTIG: Erkannte Tabellen ZWINGEND mit <table_block>...</table_block> umschließen. "
+            "Gib NUR das korrigierte Markdown zurück. Keine Einleitung, keine Kommentare."
         )
         user_prompt = (
-            f"VorlÃ¤ufiges Markdown fÃ¼r Seite {page_num}:\n\n"
+            f"Vorläufiges Markdown für Seite {page_num}:\n\n"
             f"```markdown\n{page_markdown}\n```\n\n"
-            "PrÃ¼fe und korrigiere anhand des beigefÃ¼gten Bildes."
+            "Prüfe und korrigiere anhand des beigefügten Bildes."
         )
         system_prompt = self._get_prompt("vision", default_sys)
         cache_input = CacheInput(
@@ -177,7 +179,7 @@ class LLMClient(OllamaClient):
             raise RuntimeError(f"Vision-Fehler Seite {page_num}: {e}")
 
     # ------------------------------------------------------------------ #
-    #  Phase 4 â€“ Text-Fusion                                               #
+    #  Phase 4 – Text-Fusion                                               #
     # ------------------------------------------------------------------ #
 
     def run_page_fusion(
@@ -191,7 +193,10 @@ class LLMClient(OllamaClient):
     ) -> str:
         """
         Kombiniert alle Quellen zu einem sauberen, fehlerfreien Text.
-        Ãœbergibt den ocr_text als raw_text-Caching-SchlÃ¼ssel.
+        Der v2-Cache-Key (SHA-256) wird aus den SHA-256-Hashes aller
+        Quelltexte (ocr_text, vision_markdown, glm_ocr_text,
+        previous_page_text) und den Optionen gebildet. Gleicher OCR-Text
+        mit unterschiedlichem Vision-Markdown erzeugt stets einen anderen Key.
         """
         if not self.fusion_model or self.fusion_model == "Keins":
             return ""
@@ -202,13 +207,13 @@ class LLMClient(OllamaClient):
         prev_c  = previous_page_text[:_MAX_PREV_CHARS] if previous_page_text else ""
 
         if len(intermediate_markdown) > _MAX_DOCLING_CHARS:
-            self._log(f"    â†’ Vision-Markdown auf {_MAX_DOCLING_CHARS} Zeichen gekÃ¼rzt.")
+            self._log(f"    → Vision-Markdown auf {_MAX_DOCLING_CHARS} Zeichen gekürzt.")
         if len(ocr_text) > _MAX_OCR_CHARS:
-            self._log(f"    â†’ OCR-Text auf {_MAX_OCR_CHARS} Zeichen gekÃ¼rzt.")
+            self._log(f"    → OCR-Text auf {_MAX_OCR_CHARS} Zeichen gekürzt.")
 
         parts = []
         if prev_c:
-            parts.append(f"--- KONTEXT VORHERIGE SEITE (nur fÃ¼r SeitenÃ¼bergÃ¤nge!) ---\n{prev_c}")
+            parts.append(f"--- KONTEXT VORHERIGE SEITE (nur für Seitenübergänge!) ---\n{prev_c}")
         parts.append(f"--- Vision-Review Markdown (Hauptquelle) ---\n{inter_c}")
         if glm_c:
             parts.append(f"--- GLM-OCR Text (strukturierte Rohextraktion) ---\n{glm_c}")
@@ -217,24 +222,24 @@ class LLMClient(OllamaClient):
 
         if is_tabular:
             default_sys = (
-                "Du bist ein KI-Assistent fÃ¼r layouttreue Tabellenverarbeitung. "
+                "Du bist ein KI-Assistent für layouttreue Tabellenverarbeitung. "
                 "Dir liegen bis zu drei Quellen vor: Vision-Markdown, GLM-OCR, OCR-Rohtext. "
-                "Tabellenzeilen, BetrÃ¤ge und Codes VOLLSTÃ„NDIG rekonstruieren â€“ nichts weglassen. "
-                "Deutsche Umlaute (Ã¤, Ã¶, Ã¼, ÃŸ) korrekt. Unsichere Werte als [UNSICHER: Wert]. "
-                "<table_block>...</table_block> ABSOLUT UNVERÃ„NDERT Ã¼bernehmen. "
-                "Nur den fertigen Text zurÃ¼ckgeben. Keine Kommentare."
+                "Tabellenzeilen, Beträge und Codes VOLLSTÄNDIG rekonstruieren – nichts weglassen. "
+                "Deutsche Umlaute (ä, ö, ü, ß) korrekt. Unsichere Werte als [UNSICHER: Wert]. "
+                "<table_block>...</table_block> ABSOLUT UNVERÄNDERT übernehmen. "
+                "Nur den fertigen Text zurückgeben. Keine Kommentare."
             )
         else:
             default_sys = (
-                "Du bist ein KI-Assistent fÃ¼r medizinische Dokumentenverarbeitung. "
+                "Du bist ein KI-Assistent für medizinische Dokumentenverarbeitung. "
                 "Dir liegen bis zu drei Quellen vor: Vision-Markdown (Hauptquelle), "
                 "GLM-OCR (Rohextraktion), OCR-Sidecar (Absicherung). "
-                "Erstelle einen fehlerfreien, flÃ¼ssigen FlieÃŸtext fÃ¼r diese eine Seite. "
-                "Deutsch mit korrekten Umlauten (Ã¤, Ã¶, Ã¼, ÃŸ). "
-                "Seitenkontext NUR fÃ¼r ÃœbergÃ¤nge nutzen â€“ vorherige Seite nicht wiederholen! "
-                "Ãœberschriften, Listen und Tabellen beibehalten. "
-                "<table_block>...</table_block> ABSOLUT UNVERÃ„NDERT Ã¼bernehmen. "
-                "Nur den finalen Text zurÃ¼ckgeben. Keine Kommentare."
+                "Erstelle einen fehlerfreien, flüssigen Fließtext für diese eine Seite. "
+                "Deutsch mit korrekten Umlauten (ä, ö, ü, ß). "
+                "Seitenkontext NUR für Übergänge nutzen – vorherige Seite nicht wiederholen! "
+                "Überschriften, Listen und Tabellen beibehalten. "
+                "<table_block>...</table_block> ABSOLUT UNVERÄNDERT übernehmen. "
+                "Nur den finalen Text zurückgeben. Keine Kommentare."
             )
 
         system_prompt = self._get_prompt("fusion", default_sys)
@@ -272,13 +277,13 @@ class LLMClient(OllamaClient):
         )
 
     # ------------------------------------------------------------------ #
-    #  Phase 6 â€“ Metadaten-Analyse                                         #
+    #  Phase 6 – Metadaten-Analyse                                         #
     # ------------------------------------------------------------------ #
 
     def run_analysis(self, fused_text: str) -> dict:
         """
         Extrahiert Datum, Titel, Dokumententyp und Tags als JSON-Dictionary.
-        Ãœbergibt fused_text als raw_text-Caching-SchlÃ¼ssel.
+        Übergibt fused_text als raw_text-Caching-Schlüssel.
         """
         if not self.analysis_model or self.analysis_model == "Keins":
             return {}
@@ -288,7 +293,7 @@ class LLMClient(OllamaClient):
             "1. date:          Datum im Format DD-MM-YYYY (aus Dokument, sonst heute)\n"
             "2. title:         Kurztitel ohne Leerzeichen (Unterstriche statt Leerzeichen)\n"
             "3. document_type: Dokumententyp (z.B. Arztbrief, Rechnung, Befund)\n"
-            "4. tags:          3â€“5 relevante Stichworte, kommagetrennt\n"
+            "4. tags:          3–5 relevante Stichworte, kommagetrennt\n"
             'Antwort AUSSCHLIESSLICH als JSON: {"date":"...","title":"...","document_type":"...","tags":"..."}'
         )
         text_input = fused_text[:_MAX_OCR_CHARS]
@@ -312,7 +317,7 @@ class LLMClient(OllamaClient):
         return {}
 
     # ------------------------------------------------------------------ #
-    #  Phase 8 â€“ Dokumenten-Klassifikation                               #
+    #  Phase 8 – Dokumenten-Klassifikation                               #
     # ------------------------------------------------------------------ #
 
     def run_classification(self, fused_text: str, metadata: dict, known_paths: list, valid_persons: list) -> dict:

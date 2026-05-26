@@ -61,8 +61,18 @@ def build_cache_key(cache_input: CacheInput | dict[str, Any]) -> str:
 class SQLiteCache:
     """
     Verwaltet das lokale Caching von LLM-Ergebnissen mit einer SQLite-Datenbank.
-    Erzeugt einen eindeutigen Schlüssel aus dem MD5-Hash des rohen Textinhalts,
-    dem Namen des LLM-Modells und der Version des Prompts.
+
+    Primärer Cache-Key (get_by_key / set_by_key):
+        Ein SHA-256-basierter v2-Key, der aus einem strukturierten CacheInput-
+        Objekt über build_cache_key() erzeugt wird (Schema: "llm_cache_v2").
+        Er berücksichtigt Task, Modell, Prompt-Version, Prompt-Hashes,
+        Bild-SHA-256 sowie beliebige Quell-Hashes und Optionen.
+
+    Legacy-Fallback (get / set):
+        Ältere Code-Pfade ohne CacheInput nutzen einen MD5-kombinierten Key
+        aus raw_text + Modellname + Prompt-Version. Diese Methoden bleiben
+        für Abwärtskompatibilität erhalten, sollten aber nicht für neue
+        Pipeline-Stufen verwendet werden.
     """
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path)
@@ -105,7 +115,7 @@ class SQLiteCache:
 
     def get(self, raw_text: str, model_name: str, prompt_version: str) -> str | None:
         """
-        Sucht nach einem passenden Eintrag im Cache.
+        Sucht nach einem passenden Eintrag im Cache (Legacy-Pfad, MD5-Key).
         Gibt das Ergebnis zurück oder None bei einem Cache-Miss.
         """
         if not raw_text:
@@ -134,7 +144,7 @@ class SQLiteCache:
             return None
 
     def get_by_key(self, hash_key: str, model_name: str = "") -> str | None:
-        """Sucht einen strukturierten Cache-Eintrag per bereits berechnetem Key."""
+        """Sucht einen strukturierten Cache-Eintrag per bereits berechnetem v2-SHA-256-Key."""
         if not hash_key:
             return None
         try:
@@ -145,10 +155,10 @@ class SQLiteCache:
             conn.close()
 
             if row:
-                logger.info(f"SQLite-Cache HIT fÃ¼r Modell '{model_name}' (Key: {hash_key})")
+                logger.info(f"SQLite-Cache HIT für Modell '{model_name}' (Key: {hash_key})")
                 return row["result_text"]
 
-            logger.info(f"SQLite-Cache MISS fÃ¼r Modell '{model_name}' (Key: {hash_key})")
+            logger.info(f"SQLite-Cache MISS für Modell '{model_name}' (Key: {hash_key})")
             return None
         except Exception as e:
             logger.error(f"Fehler beim Lesen aus dem Cache: {e}")
@@ -184,7 +194,7 @@ class SQLiteCache:
         raw_text: str = "",
         key_schema: str = "llm_cache_v2",
     ):
-        """Speichert ein Ergebnis unter einem strukturierten SHA-256 Cache-Key."""
+        """Speichert ein Ergebnis unter einem strukturierten SHA-256 v2-Cache-Key."""
         if not hash_key or not result_text:
             return
         try:
@@ -197,6 +207,6 @@ class SQLiteCache:
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (hash_key, result_text, "", model_name, prompt_version, raw_text_sha256, key_schema))
             conn.close()
-            logger.info(f"SQLite-Cache Eintrag gespeichert fÃ¼r Modell '{model_name}' (Key: {hash_key})")
+            logger.info(f"SQLite-Cache Eintrag gespeichert für Modell '{model_name}' (Key: {hash_key})")
         except Exception as e:
             logger.error(f"Fehler beim Schreiben in den Cache: {e}")

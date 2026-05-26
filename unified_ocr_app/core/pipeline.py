@@ -42,14 +42,14 @@ class PipelineOrchestrator:
     Koordiniert alle Stufen der OCR-Pipeline für eine einzelne Datei.
 
     Ablauf:
-        Stage 1  â†’ Datei-Vorbereitung + OCRmyPDF
-        Stage 2  â†’ Docling + Seitenextraktion (PyMuPDF)
-        Stage 2b â†’ GLM-OCR (optionales spezialisiertes Dokumenten-OCR)
-        Stage 3  â†’ Vision-Review per Seite (Qwen3-VL o.ä.)
-        Stage 4  â†’ Text-Fusion per Seite
-        Stage 5  â†’ Qualitätskontrolle + Self-Correction Loop
-        Stage 6  â†’ Metadaten-Analyse
-        Stage 7  â†’ Export (PDF / TXT / DOCX)
+        Stage 1  → Datei-Vorbereitung + OCRmyPDF
+        Stage 2  → Docling + Seitenextraktion (PyMuPDF)
+        Stage 2b → GLM-OCR (optionales spezialisiertes Dokumenten-OCR)
+        Stage 3  → Vision-Review per Seite (Qwen3-VL o.ä.)
+        Stage 4  → Text-Fusion per Seite
+        Stage 5  → Qualitätskontrolle + Self-Correction Loop
+        Stage 6  → Metadaten-Analyse
+        Stage 7  → Export (PDF / TXT / DOCX)
     """
 
     def __init__(
@@ -110,7 +110,7 @@ class PipelineOrchestrator:
     # ------------------------------------------------------------------ #
 
     def _stage_prepare(self, original_path: Path, work_dir: Path) -> Path:
-        """Konvertiert Bild â†’ PDF oder kopiert PDF ins Arbeitsverzeichnis."""
+        """Konvertiert Bild → PDF oder kopiert PDF ins Arbeitsverzeichnis."""
         work_pdf = work_dir / f"{original_path.stem}_work.pdf"
         suffix = original_path.suffix.lower()
         if suffix in (".png", ".jpg", ".jpeg", ".heic"):
@@ -320,7 +320,7 @@ class PipelineOrchestrator:
                     )
                     self.log(f"  -> Text-Fusion Seite {page_num}: degraded fallback verwendet (leere/deaktivierte Fusion).")
             except Exception as e:
-                self.log(f"  âš  Fehler bei Text-Fusion Seite {page_num}: {e}")
+                self.log(f"  ⚠️ Fehler bei Text-Fusion Seite {page_num}: {e}")
                 fused[page_num] = self._best_page_text_source(
                     vision_text=vision_text,
                     glm_text=glm_text,
@@ -367,7 +367,7 @@ class PipelineOrchestrator:
         if report.get("warnings"):
             self.log(f"\n[WARNUNG] {len(report['warnings'])} Auffälligkeit(en):")
             for w in report["warnings"]:
-                self.log(f"  âš  {w}")
+                self.log(f"  ⚠️ {w}")
                 logger.warning(w)
             return fused_text, report
         else:
@@ -549,7 +549,7 @@ class PipelineOrchestrator:
             
         except Exception as e:
             logger.exception("Fehler beim Sortieren des Dokuments")
-            self.log(f"âš  Sortierung fehlgeschlagen: {e}")
+            self.log(f"⚠️ Sortierung fehlgeschlagen: {e}")
             return [], "Sonstiges"
 
     def _get_canonical_doc_type(self, doc_type: str) -> str:
@@ -727,7 +727,7 @@ class PipelineOrchestrator:
                         logger.error(f"Fehler bei GDrive-Konsolidierung von {filename}: {err}")
         except Exception as e:
             logger.exception("Fehler bei der Google Drive Konsolidierung")
-            self.log(f"âš  Google Drive Konsolidierung fehlgeschlagen: {e}")
+            self.log(f"⚠️ Google Drive Konsolidierung fehlgeschlagen: {e}")
 
     def _stage_gdrive_upload(self, pdf_file: Path, docx_file: Path, json_file: Path, target_path: str, is_docx_input: bool = False):
         """Uploads selected files to Google Drive, reproducing the local subdirectory layout."""
@@ -739,7 +739,7 @@ class PipelineOrchestrator:
             from core.cloud.gdrive_client import GoogleDriveClient
             client = GoogleDriveClient()
             if not client.is_authenticated(self.gdrive_token_path):
-                self.log("âš  Google Drive Upload übersprungen: Nicht authentifiziert (token.json fehlt oder abgelaufen).")
+                self.log("⚠️ Google Drive Upload übersprungen: Nicht authentifiziert (token.json fehlt oder abgelaufen).")
                 return
 
             upload_items = []
@@ -759,12 +759,12 @@ class PipelineOrchestrator:
                 self.log(f"  Lade hoch: {p.name} nach Google Drive Ordner '{target_path}'...")
                 try:
                     file_id = client.upload_file(self.gdrive_token_path, str(p), target_path)
-                    self.log(f"  âœ“ Erfolgreich hochgeladen: {p.name} (Google Drive ID: {file_id})")
+                    self.log(f"  ✔ Erfolgreich hochgeladen: {p.name} (Google Drive ID: {file_id})")
                 except Exception as upload_err:
-                    self.log(f"  âš  Fehler beim Upload von '{p.name}': {upload_err}")
+                    self.log(f"  ⚠️ Fehler beim Upload von '{p.name}': {upload_err}")
                     logger.exception(f"Google Drive Upload-Fehler für '{p.name}'")
         except Exception as e:
-            self.log(f"âš  Google Drive Integration fehlgeschlagen: {e}")
+            self.log(f"⚠️ Google Drive Integration fehlgeschlagen: {e}")
             logger.exception("Google Drive Integration Fehler")
 
     def process_deferred_organizations(self):

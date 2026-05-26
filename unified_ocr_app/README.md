@@ -58,11 +58,19 @@ py -3.10 -m pip install -e .[dev]
 
 ## Start
 
+Aus dem **Paketordner** `unified_ocr_app\` heraus:
+
 ```powershell
 py -3.10 app.py
 ```
 
-Alternativ:
+Aus dem **Repository-Root** (empfohlen fuer den normalen Betrieb):
+
+```powershell
+py -3.10 main.py
+```
+
+Alternativ per Batch-Datei:
 
 ```powershell
 ocr_pipeline.bat
