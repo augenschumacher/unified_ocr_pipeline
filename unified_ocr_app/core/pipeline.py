@@ -3,6 +3,7 @@ import re
 import uuid
 import json
 import logging
+import time
 from pathlib import Path
 
 from core.llm import LLMClient
@@ -12,6 +13,7 @@ from core.ocr import (
     run_docling_by_page_with_chunks,
     extract_pages_as_images,
     extract_ocr_text_per_page,
+    extract_ordered_text_blocks_per_page,
     inject_fused_text_and_metadata,
 )
 from core.docx_tools import save_markdown_as_docx
@@ -26,6 +28,10 @@ from core.document_extractors import (
     extract_text_from_odt,
 )
 from core.job_history import JobHistory
+from core.manifest import JobManifest
+from core.diagnostics import DiagnosticsRecorder
+from core.cache import sha256_file
+from core.local_store import LocalStore
 from core.runtime_paths import normalize_token_path
 
 logger = logging.getLogger("UnifiedOCR")
@@ -62,6 +68,7 @@ class PipelineOrchestrator:
         progress_callback=None,
         organize_enabled: bool = True,
         prompt_new_folder_callback=None,
+        prompt_sorting_callback=None,
         gdrive_enabled: bool = False,
         gdrive_token_path: str = "token.json",
         save_docx_enabled: bool = True,
@@ -69,10 +76,20 @@ class PipelineOrchestrator:
         gdrive_upload_pdf: bool = False,
         gdrive_upload_docx: bool = False,
         gdrive_upload_json: bool = False,
+        synology_enabled: bool = False,
+        synology_base_url: str = "",
+        synology_username: str = "",
+        synology_password: str = "",
+        synology_root_path: str = "",
+        synology_upload_pdf: bool = True,
+        synology_upload_docx: bool = False,
+        synology_upload_json: bool = False,
         review_before_save: bool = None,
         prompt_review_callback=None,
         on_processing_start_callback=None,
         large_pdf_reduced: bool = True,
+        privacy_mode: str = "standard",
+        debug_artifacts_enabled: bool = True,
     ):
         self.config = config
         self.llm = llm_client
@@ -82,19 +99,51 @@ class PipelineOrchestrator:
         self.progress_callback = progress_callback
         self.organize_enabled = organize_enabled
         self.prompt_new_folder_callback = prompt_new_folder_callback
-        self.gdrive_enabled = gdrive_enabled
+        self.prompt_sorting_callback = prompt_sorting_callback
+        self.privacy_mode = privacy_mode or "standard"
+        self.gdrive_enabled = bool(gdrive_enabled) and self.privacy_mode != "local_only"
         self.gdrive_token_path = normalize_token_path(gdrive_token_path)
         self.save_docx_enabled = save_docx_enabled
         self.save_json_enabled = save_json_enabled
         self.gdrive_upload_pdf = gdrive_upload_pdf
         self.gdrive_upload_docx = gdrive_upload_docx
         self.gdrive_upload_json = gdrive_upload_json
+        self.synology_base_url = (synology_base_url or "").strip()
+        self.synology_username = (synology_username or "").strip()
+        self.synology_password = synology_password or ""
+        self.synology_root_path = (synology_root_path or "").strip().replace("\\", "/")
+        self.synology_upload_pdf = synology_upload_pdf
+        self.synology_upload_docx = synology_upload_docx
+        self.synology_upload_json = synology_upload_json
+        self.synology_enabled = bool(synology_enabled)
+        if self.synology_enabled and self.privacy_mode == "local_only":
+            try:
+                from core.cloud.synology_client import is_private_webdav_url
+                if not is_private_webdav_url(self.synology_base_url):
+                    self.synology_enabled = False
+                    self.log("Privacy Mode local_only: Synology/WebDAV deaktiviert, weil die URL nicht lokal wirkt.")
+            except Exception:
+                self.synology_enabled = False
         self.review_before_save = review_before_save
         self.prompt_review_callback = prompt_review_callback
         self.on_processing_start_callback = on_processing_start_callback
         self.large_pdf_reduced = large_pdf_reduced
+        self.debug_artifacts_enabled = bool(debug_artifacts_enabled)
         self._chosen_target_path = None
         self.deferred_organizations = []
+
+    def _is_external_model(self, model: str) -> bool:
+        prefix = (model or "").split("/", 1)[0].lower()
+        return prefix in {"openai", "gemini", "mistral", "anthropic", "cohere", "vertex_ai"}
+
+    def _enforce_privacy_mode(self):
+        if self.privacy_mode != "local_only":
+            return
+        for attr in ("vision_model", "fusion_model", "analysis_model", "glm_ocr_model"):
+            model = getattr(self.llm, attr, "")
+            if self._is_external_model(model):
+                setattr(self.llm, attr, "Keins")
+                self.log(f"Privacy Mode local_only: externes Modell deaktiviert ({model}).")
 
     def log(self, message: str):
         if self.log_callback:
@@ -172,6 +221,27 @@ class PipelineOrchestrator:
     def _stage_extract_pages(self, ocr_pdf: Path, work_dir: Path) -> tuple[list, dict]:
         """Rendert Seiten als PNG und extrahiert OCR-Text pro Seite (PyMuPDF)."""
         return extract_pages_as_images(ocr_pdf, work_dir), extract_ocr_text_per_page(ocr_pdf)
+
+    def _summarize_layout_blocks(self, layout_blocks: dict[int, list[dict]]) -> dict:
+        """Create a compact, auditable summary of page text packets."""
+        summary = {"pages": 0, "blocks_total": 0, "blocks": {}}
+        for page_num, blocks in (layout_blocks or {}).items():
+            summary["pages"] += 1
+            summary["blocks_total"] += len(blocks or [])
+            summary["blocks"][str(page_num)] = [
+                {
+                    "order": block.get("reading_order", index),
+                    "bbox": [
+                        round(float(block.get("x0", 0)), 2),
+                        round(float(block.get("y0", 0)), 2),
+                        round(float(block.get("x1", 0)), 2),
+                        round(float(block.get("y1", 0)), 2),
+                    ],
+                    "text_preview": (block.get("text", "") or "")[:160],
+                }
+                for index, block in enumerate(blocks or [])
+            ]
+        return summary
 
     def _detect_tabular(self, filename: str, page_markdowns: dict) -> bool:
         """Heuristik: Enthält das Dokument Tabellen oder Formulardaten?"""
@@ -414,9 +484,9 @@ class PipelineOrchestrator:
             docx_mode=self.docx_mode,
             save_docx_enabled=self.save_docx_enabled,
             save_json_enabled=self.save_json_enabled,
-            gdrive_enabled=self.gdrive_enabled,
-            gdrive_upload_docx=self.gdrive_upload_docx,
-            gdrive_upload_json=self.gdrive_upload_json,
+            gdrive_enabled=self.gdrive_enabled or self.synology_enabled,
+            gdrive_upload_docx=self.gdrive_upload_docx or self.synology_upload_docx,
+            gdrive_upload_json=self.gdrive_upload_json or self.synology_upload_json,
             log_callback=self.log,
             save_docx_func=save_markdown_as_docx,
             inject_pdf_func=inject_fused_text_and_metadata,
@@ -448,6 +518,22 @@ class PipelineOrchestrator:
                     return moved_path
         return path if path and path.exists() else None
 
+    def _classification_needs_prompt(self, result: dict) -> bool:
+        if not result:
+            return False
+        if result.get("is_new"):
+            return False
+        candidates = result.get("candidates") or []
+        confidence = int(result.get("confidence") or result.get("score") or 0)
+        if confidence < 60:
+            return True
+        if len(candidates) >= 2:
+            top = int(candidates[0].get("score") or 0)
+            second = int(candidates[1].get("score") or 0)
+            if top < 85 and top - second <= 8:
+                return True
+        return False
+
     # ------------------------------------------------------------------ #
     #  Stage 8: Sortieren / Organize                                      #
     # ------------------------------------------------------------------ #
@@ -456,6 +542,7 @@ class PipelineOrchestrator:
         self, fused_text: str, metadata: dict, final_name: str, is_docx: bool = False
     ) -> tuple[list, str]:
         from core.cloud.folder_registry import FolderRegistry
+        from core.cloud.classification_memory import ClassificationMemory
         from core.cloud.organizer import DocumentOrganizer
 
         self.log("Starte Dokumentensortierung...")
@@ -464,13 +551,49 @@ class PipelineOrchestrator:
             registry = FolderRegistry(self.config.base_dir)
             known_paths = registry.get_known_paths()
             valid_persons = registry.get_persons()
+            path_contexts = registry.get_path_contexts()
+            memory = ClassificationMemory(self.config.base_dir)
+            store = LocalStore(self.config)
+            memory_candidates = memory.build_candidates(fused_text, metadata, known_paths)
+            classification_result = {}
+            learning_source = ""
+            review_item_id = None
             
             if hasattr(self, "_chosen_target_path") and self._chosen_target_path:
                 target_path = self._chosen_target_path.strip().replace("\\", "/")
+                learning_source = "manual_review"
             else:
                 # Klassifikation per LLM
-                res = self.llm.run_classification(fused_text, metadata, known_paths, valid_persons)
-                target_path = res.get("recommended_path", "Sonstiges")
+                classification_result = self.llm.run_classification(
+                    fused_text,
+                    metadata,
+                    known_paths,
+                    valid_persons,
+                    path_contexts,
+                    memory_candidates,
+                )
+                target_path = classification_result.get("recommended_path", "Sonstiges")
+                confidence = classification_result.get("confidence", classification_result.get("score", 0))
+                if classification_result.get("reason") == "context_match":
+                    self.log(f"  Kontexttreffer: {target_path} (Score {confidence})")
+                elif classification_result.get("reason") in {"memory", "fallback"} and memory_candidates:
+                    self.log(f"  Lernspeicher-Vorschlag: {target_path} (Score {confidence})")
+
+                if self.prompt_sorting_callback and self._classification_needs_prompt(classification_result):
+                    self.log(f"  Sortierung unsicher (Score {confidence}). Frage Benutzer nach Zielpfad...")
+                    review_item_id = store.add_review_item(
+                        job_id=getattr(self, "_current_job_id", ""),
+                        kind="sorting_uncertain",
+                        source_name=final_name,
+                        proposed_path=target_path,
+                        candidates=classification_result.get("candidates", []),
+                        metadata=metadata,
+                    )
+                    chosen_path = self.prompt_sorting_callback(classification_result, known_paths, target_path)
+                    if chosen_path:
+                        target_path = chosen_path.strip().replace("\\", "/")
+                        learning_source = "sorting_prompt"
+                        store.resolve_review_item(review_item_id, target_path)
             
             # Normalisierung und Validierung des Hauptordners
             parts = [p.strip() for p in target_path.replace("\\", "/").split("/") if p.strip()]
@@ -488,6 +611,14 @@ class PipelineOrchestrator:
             self.log(f"  Empfohlener Pfad: '{target_path}' (Neu: {is_new})")
             
             if is_new:
+                review_item_id = store.add_review_item(
+                    job_id=getattr(self, "_current_job_id", ""),
+                    kind="new_path",
+                    source_name=final_name,
+                    proposed_path=target_path,
+                    candidates=classification_result.get("candidates", []),
+                    metadata=metadata,
+                )
                 # Verschiebe die Dateien in einen temporären Staging-Ordner und stelle die Entscheidung zurück
                 staging_dir = self.config.final_dir / "_staging" / final_name
                 staging_dir.mkdir(parents=True, exist_ok=True)
@@ -516,7 +647,9 @@ class PipelineOrchestrator:
                     "staging_dir": staging_dir,
                     "fused_text": fused_text,
                     "metadata": metadata,
-                    "is_docx": is_docx
+                    "is_docx": is_docx,
+                    "classification_result": classification_result,
+                    "review_item_id": review_item_id,
                 })
                 self.log(f"  -> Einsortierung zurückgestellt. Dateien in Staging-Ordner verschoben.")
                 return staged_files, target_path
@@ -542,6 +675,15 @@ class PipelineOrchestrator:
             
             if moved_files:
                 self.log(f"-> Einsortiert in Ordner: final/{target_path}")
+                if learning_source:
+                    memory.record_decision(
+                        chosen_path=target_path,
+                        fused_text=fused_text,
+                        metadata=metadata,
+                        proposed_path=classification_result.get("recommended_path", ""),
+                        candidates=classification_result.get("candidates", []),
+                        source=learning_source,
+                    )
             else:
                 self.log("-> Keine Dateien zum Verschieben gefunden.")
                 
@@ -731,8 +873,9 @@ class PipelineOrchestrator:
 
     def _stage_gdrive_upload(self, pdf_file: Path, docx_file: Path, json_file: Path, target_path: str, is_docx_input: bool = False):
         """Uploads selected files to Google Drive, reproducing the local subdirectory layout."""
+        uploads = []
         if not self.gdrive_enabled:
-            return
+            return uploads
         
         self.log("Starte Google Drive Upload...")
         try:
@@ -740,7 +883,7 @@ class PipelineOrchestrator:
             client = GoogleDriveClient()
             if not client.is_authenticated(self.gdrive_token_path):
                 self.log("⚠️ Google Drive Upload übersprungen: Nicht authentifiziert (token.json fehlt oder abgelaufen).")
-                return
+                return uploads
 
             upload_items = []
             if not is_docx_input and self.gdrive_upload_pdf and pdf_file and pdf_file.exists():
@@ -752,13 +895,20 @@ class PipelineOrchestrator:
 
             if not upload_items:
                 self.log("-> Keine Dateien für den Google Drive Upload ausgewählt oder vorhanden.")
-                return
+                return uploads
 
             for file_path in upload_items:
                 p = Path(file_path)
                 self.log(f"  Lade hoch: {p.name} nach Google Drive Ordner '{target_path}'...")
                 try:
                     file_id = client.upload_file(self.gdrive_token_path, str(p), target_path)
+                    uploads.append({
+                        "local_path": str(p),
+                        "filename": p.name,
+                        "drive_file_id": file_id,
+                        "folder_path": target_path,
+                        "action": "uploaded",
+                    })
                     self.log(f"  ✔ Erfolgreich hochgeladen: {p.name} (Google Drive ID: {file_id})")
                 except Exception as upload_err:
                     self.log(f"  ⚠️ Fehler beim Upload von '{p.name}': {upload_err}")
@@ -766,6 +916,54 @@ class PipelineOrchestrator:
         except Exception as e:
             self.log(f"⚠️ Google Drive Integration fehlgeschlagen: {e}")
             logger.exception("Google Drive Integration Fehler")
+        return uploads
+
+    def _stage_synology_upload(self, pdf_file: Path, docx_file: Path, json_file: Path, target_path: str, is_docx_input: bool = False):
+        """Uploads selected files to a Synology WebDAV target, preserving the local folder layout."""
+        uploads = []
+        if not self.synology_enabled:
+            return uploads
+
+        self.log("Starte Synology/WebDAV Upload...")
+        try:
+            from core.cloud.synology_client import SynologyWebDAVClient
+
+            client = SynologyWebDAVClient(
+                base_url=self.synology_base_url,
+                username=self.synology_username,
+                password=self.synology_password,
+                root_path=self.synology_root_path,
+            )
+            if not client.is_configured:
+                self.log("⚠️ Synology/WebDAV Upload übersprungen: Server, Benutzername oder Passwort fehlen.")
+                return uploads
+
+            upload_items = []
+            if not is_docx_input and self.synology_upload_pdf and pdf_file and pdf_file.exists():
+                upload_items.append(pdf_file)
+            if (is_docx_input or self.synology_upload_docx) and docx_file and docx_file.exists():
+                upload_items.append(docx_file)
+            if self.synology_upload_json and json_file and json_file.exists():
+                upload_items.append(json_file)
+
+            if not upload_items:
+                self.log("-> Keine Dateien für den Synology/WebDAV Upload ausgewählt oder vorhanden.")
+                return uploads
+
+            for file_path in upload_items:
+                p = Path(file_path)
+                self.log(f"  Lade hoch: {p.name} nach Synology/WebDAV Ordner '{target_path}'...")
+                try:
+                    result = client.upload_file(p, target_path)
+                    uploads.append(result)
+                    self.log(f"  ✔ Erfolgreich synchronisiert: {p.name} ({result.get('remote_path')})")
+                except Exception as upload_err:
+                    self.log(f"  ⚠️ Fehler beim Synology/WebDAV Upload von '{p.name}': {upload_err}")
+                    logger.exception(f"Synology/WebDAV Upload-Fehler für '{p.name}'")
+        except Exception as e:
+            self.log(f"⚠️ Synology/WebDAV Integration fehlgeschlagen: {e}")
+            logger.exception("Synology/WebDAV Integration Fehler")
+        return uploads
 
     def process_deferred_organizations(self):
         """
@@ -789,6 +987,8 @@ class PipelineOrchestrator:
             fused_text = item["fused_text"]
             metadata = item["metadata"]
             is_docx = item["is_docx"]
+            classification_result = item.get("classification_result", {})
+            review_item_id = item.get("review_item_id")
             
             self.log(f"\n--- Einsortierung für '{final_name}' ---")
             
@@ -826,6 +1026,18 @@ class PipelineOrchestrator:
                 
                 if target_path not in known_paths:
                     registry.add_path(target_path)
+                LocalStore(self.config).resolve_review_item(review_item_id, target_path)
+                try:
+                    ClassificationMemory(self.config.base_dir).record_decision(
+                        chosen_path=target_path,
+                        fused_text=fused_text,
+                        metadata=metadata,
+                        proposed_path=proposed_path,
+                        candidates=classification_result.get("candidates", []),
+                        source="deferred_folder_prompt",
+                    )
+                except Exception as memory_err:
+                    logger.warning(f"Klassifizierungs-Lernspeicher konnte nicht aktualisiert werden: {memory_err}")
             except Exception as e:
                 self.log(f"Fehler bei Ordner-Registry-Abgleich: {e}")
                 target_path = "Sonstiges"
@@ -872,6 +1084,21 @@ class PipelineOrchestrator:
                     )
                 except Exception as upload_err:
                     self.log(f"Fehler bei Google Drive Upload: {upload_err}")
+
+            if self.synology_enabled:
+                json_file = self.config.final_dir / "begleitdateien" / f"{final_name}_quality_report.json"
+                companion_docx = self.config.final_dir / "begleitdateien" / f"{final_name}.docx"
+                synology_docx = docx_file if is_docx else companion_docx
+                try:
+                    self._stage_synology_upload(
+                        pdf_file=pdf_file,
+                        docx_file=synology_docx,
+                        json_file=json_file,
+                        target_path=target_path,
+                        is_docx_input=is_docx,
+                    )
+                except Exception as upload_err:
+                    self.log(f"Fehler bei Synology/WebDAV Upload: {upload_err}")
             
             # Cleanup von ungenutzten Dateien
             if not self.save_docx_enabled:
@@ -912,15 +1139,34 @@ class PipelineOrchestrator:
     # ------------------------------------------------------------------ #
 
     def process_file(self, file_path: Path):
+        self._enforce_privacy_mode()
         self._chosen_target_path = None  # Prevent state leakage between subsequent runs
         filename = file_path.name
         metadata = {}
         final_name = ""
         target_path = ""
+        manifest = None
+        diagnostics = None
+        source_sha256 = sha256_file(file_path)
+        local_store = LocalStore(self.config)
+        duplicate_matches = local_store.find_duplicates(source_sha256)
         job_history = JobHistory(self.config)
         job_id = job_history.start(file_path)
+        self._current_job_id = job_id
         self.log(f"\n{'─' * 50}")
         self.log(f"Starte Verarbeitung: {filename}")
+        if duplicate_matches:
+            match = duplicate_matches[0]
+            self.log(
+                "⚠️ Mögliches Duplikat erkannt: "
+                f"{match.get('final_name') or match.get('source_name')} in {match.get('target_path') or 'unbekannt'}"
+            )
+            local_store.record_event(
+                job_id,
+                "duplicate_detected",
+                status="warning",
+                payload={"source_sha256": source_sha256, "matches": duplicate_matches},
+            )
         self.report_progress(0.05)
 
         # Datei ins original-Verzeichnis sichern
@@ -944,6 +1190,47 @@ class PipelineOrchestrator:
         # Eindeutiger Ordner für Zwischenergebnisse
         work_dir = self.config.work_dir / f"work_{uuid.uuid4().hex}"
         work_dir.mkdir(parents=True, exist_ok=True)
+        manifest = JobManifest.create(job_id=job_id, source_path=original_path, manifest_dir=work_dir)
+        diagnostics = DiagnosticsRecorder(
+            job_id=job_id,
+            source_path=original_path,
+            enabled=self.debug_artifacts_enabled,
+        )
+        diagnostics.configure(
+            output_format=self.output_format,
+            docx_mode=self.docx_mode,
+            organize_enabled=self.organize_enabled,
+            privacy_mode=self.privacy_mode,
+            gdrive_enabled=self.gdrive_enabled,
+            gdrive_upload_pdf=self.gdrive_upload_pdf,
+            gdrive_upload_docx=self.gdrive_upload_docx,
+            gdrive_upload_json=self.gdrive_upload_json,
+            synology_enabled=self.synology_enabled,
+            synology_base_url=self.synology_base_url,
+            synology_root_path=self.synology_root_path,
+            synology_upload_pdf=self.synology_upload_pdf,
+            synology_upload_docx=self.synology_upload_docx,
+            synology_upload_json=self.synology_upload_json,
+            save_docx_enabled=self.save_docx_enabled,
+            save_json_enabled=self.save_json_enabled,
+            large_pdf_reduced=self.large_pdf_reduced,
+            models={
+                "glm_ocr": getattr(self.llm, "glm_ocr_model", ""),
+                "vision": getattr(self.llm, "vision_model", ""),
+                "fusion": getattr(self.llm, "fusion_model", ""),
+                "analysis": getattr(self.llm, "analysis_model", ""),
+            },
+        )
+        diagnostics.event("job_started", filename=filename, source_sha256=source_sha256)
+        manifest.record_stage("original_archive", "ok", artifacts={"original_path": original_path})
+        if duplicate_matches:
+            diagnostics.warn("Mögliches Duplikat erkannt.", matches=duplicate_matches)
+            manifest.record_stage(
+                "duplicate_check",
+                "warning",
+                warnings=["Mögliches Duplikat erkannt."],
+                provenance={"source_sha256": source_sha256, "matches": duplicate_matches},
+            )
 
         try:
             suffix = original_path.suffix.lower()
@@ -951,6 +1238,7 @@ class PipelineOrchestrator:
 
             if is_docx:
                 self.log(f"Direkter Bypass-Modus für Office-Dokument ({suffix.upper()[1:]}) aktiv. Überspringe OCR und Seitenextraktion.")
+                stage_start = time.perf_counter()
                 if suffix == ".docx":
                     ocr_text = self._extract_text_from_docx(original_path)
                 elif suffix == ".odt":
@@ -964,13 +1252,24 @@ class PipelineOrchestrator:
                 fused_pages = {1: fused_text}
                 image_paths = []
                 quality_report = {}
+                page_layout_blocks = {}
                 source_pdf_for_export = original_path
+                manifest.record_stage("office_extract", "ok", artifacts={"source": original_path})
+                diagnostics.stage("office_extract", start=stage_start, suffix=suffix, text_chars=len(ocr_text or ""))
+                diagnostics.record_text_sources(office_text=ocr_text)
             else:
                 # ── Stage 1: Vorbereitung & OCR ──────────────────────────────
                 self.report_progress(0.10)
+                stage_start = time.perf_counter()
                 work_pdf = self._stage_prepare(original_path, work_dir)
+                manifest.record_stage("prepare", "ok", artifacts={"work_pdf": work_pdf})
+                diagnostics.stage("prepare", start=stage_start, work_pdf=work_pdf)
                 self.report_progress(0.15)
+                stage_start = time.perf_counter()
                 ocr_pdf, ocr_text = self._stage_ocrmypdf(work_pdf, work_dir)
+                manifest.record_stage("ocrmypdf", "ok", artifacts={"ocr_pdf": ocr_pdf}, provenance={"text_chars": len(ocr_text or "")})
+                diagnostics.stage("ocrmypdf", start=stage_start, ocr_pdf=ocr_pdf, text_chars=len(ocr_text or ""))
+                diagnostics.record_text_sources(ocr_sidecar=ocr_text)
                 self.report_progress(0.30)
 
                 # Seitenanzahl ermitteln
@@ -995,37 +1294,96 @@ class PipelineOrchestrator:
                     fused_text = ocr_text
                     fused_pages = {}
                     image_paths = []
+                    page_layout_blocks = {}
                     quality_report = {
                         "warnings": [f"Reduzierte Analyse aktiv wegen hoher Seitenanzahl ({total_pages} > {self.config.large_pdf_page_limit})."]
                     }
                     source_pdf_for_export = ocr_pdf
+                    manifest.record_stage("reduced_analysis", "degraded", warnings=quality_report["warnings"], provenance={"total_pages": total_pages})
+                    diagnostics.stage("reduced_analysis", status="degraded", total_pages=total_pages, page_limit=self.config.large_pdf_page_limit)
+                    diagnostics.warn("Reduzierte Analyse aktiv.", total_pages=total_pages, page_limit=self.config.large_pdf_page_limit)
                 else:
                     # Detaillierte Analyse
                     # ── Stage 2: Docling & Seitenextraktion ───────────────────────
+                    stage_start = time.perf_counter()
                     docling_text, page_mds = self._stage_docling(ocr_pdf, work_pdf)
+                    manifest.record_stage("docling", "ok", provenance={"text_chars": len(docling_text or ""), "pages": len(page_mds or {})})
+                    diagnostics.stage("docling", start=stage_start, text_chars=len(docling_text or ""), pages=len(page_mds or {}))
+                    diagnostics.record_text_sources(docling_text=docling_text, docling_pages=page_mds)
                     self.report_progress(0.35)
+                    stage_start = time.perf_counter()
                     image_paths, page_ocr_texts = self._stage_extract_pages(ocr_pdf, work_dir)
+                    page_layout_blocks = extract_ordered_text_blocks_per_page(ocr_pdf)
+                    manifest.record_stage(
+                        "page_extract",
+                        "ok",
+                        artifacts={"images": image_paths},
+                        provenance={
+                            "pages": len(image_paths or []),
+                            "layout_blocks": sum(len(v or []) for v in (page_layout_blocks or {}).values()),
+                        },
+                    )
+                    layout_summary = self._summarize_layout_blocks(page_layout_blocks)
+                    diagnostics.stage(
+                        "page_extract",
+                        start=stage_start,
+                        images=len(image_paths or []),
+                        ocr_pages=len(page_ocr_texts or {}),
+                        layout_blocks=sum(len(v or []) for v in (page_layout_blocks or {}).values()),
+                    )
+                    diagnostics.record_text_sources(page_ocr=page_ocr_texts)
+                    diagnostics.record_layout(layout_summary)
                     self.report_progress(0.40)
 
                     # ── Stage 2b & 3: GLM-OCR & Vision-Review ────────────────────
                     is_tabular = self._detect_tabular(filename, page_mds)
+                    stage_start = time.perf_counter()
                     glm_texts = self._stage_glm_ocr(image_paths, total_pages)
+                    manifest.record_stage("glm_ocr", "skipped" if not any((glm_texts or {}).values()) else "ok", provenance={"pages": len(glm_texts or {})})
+                    diagnostics.stage("glm_ocr", status="skipped" if not any((glm_texts or {}).values()) else "ok", start=stage_start, pages=len(glm_texts or {}))
+                    diagnostics.record_text_sources(glm_pages=glm_texts)
+                    stage_start = time.perf_counter()
                     vision_mds, page_descriptions = self._stage_vision_review(
                         image_paths, page_mds, page_ocr_texts, total_pages
                     )
+                    manifest.record_stage("vision", "skipped" if not any((vision_mds or {}).values()) else "ok", provenance={"pages": len(vision_mds or {}), "descriptions": len(page_descriptions or {})})
+                    diagnostics.stage(
+                        "vision",
+                        status="skipped" if not any((vision_mds or {}).values()) else "ok",
+                        start=stage_start,
+                        pages=len(vision_mds or {}),
+                        descriptions=len(page_descriptions or {}),
+                    )
+                    diagnostics.record_text_sources(vision_pages=vision_mds, image_descriptions=page_descriptions)
 
                     # ── Stage 4: Fusion ──────────────────────────────────────────
+                    stage_start = time.perf_counter()
                     fused_pages = self._stage_fusion(
                         image_paths, page_ocr_texts, vision_mds, page_mds, glm_texts, is_tabular, total_pages
                     )
+                    fusion_status = "ok" if any((v or "").strip() for v in (fused_pages or {}).values()) else "degraded"
+                    manifest.record_stage("fusion", fusion_status, provenance={"pages": len(fused_pages or {}), "is_tabular": is_tabular})
+                    diagnostics.stage("fusion", status=fusion_status, start=stage_start, pages=len(fused_pages or {}), is_tabular=is_tabular)
+                    diagnostics.record_text_sources(fused_pages=fused_pages)
                     
                     # ── Stage 5: Qualitätskontrolle ──────────────────────────────
                     self.report_progress(0.82)
                     vision_combined = "\n\n".join(vision_mds.values())
                     
                     initial_fused_text = "\n\n".join(fused_pages.values()) if fused_pages else ocr_text
+                    stage_start = time.perf_counter()
                     fused_text_corrected, quality_report = self._stage_quality(ocr_text, docling_text, vision_combined, initial_fused_text)
+                    if isinstance(quality_report, dict):
+                        quality_report["layout_packets"] = layout_summary
                     source_pdf_for_export = ocr_pdf if ocr_pdf and Path(ocr_pdf).exists() else work_pdf
+                    manifest.record_stage("quality", "ok", warnings=(quality_report or {}).get("warnings", []), provenance={"corrected": fused_text_corrected != initial_fused_text})
+                    diagnostics.stage(
+                        "quality",
+                        start=stage_start,
+                        corrected=fused_text_corrected != initial_fused_text,
+                        warnings=(quality_report or {}).get("warnings", []),
+                    )
+                    diagnostics.record_text_sources(fused_document=fused_text_corrected)
                     
                     if fused_text_corrected != initial_fused_text:
                         self.log("Qualitaets-Nachkorrektur hat Text veraendert. PDF-Textlayer bleibt seitenweise; korrigierter Dokumenttext wird fuer TXT/DOCX/Metadaten genutzt.")
@@ -1060,19 +1418,36 @@ class PipelineOrchestrator:
 
             # ── Stage 6: Metadaten-Analyse ────────────────────────────────
             self.report_progress(0.88)
+            stage_start = time.perf_counter()
             metadata, final_name = self._stage_analysis(fused_text)
+            manifest.record_stage("analysis", "ok" if metadata else "degraded", provenance={"final_name": final_name})
+            manifest.record_metadata(metadata)
+            diagnostics.stage(
+                "analysis",
+                status="ok" if metadata else "degraded",
+                start=stage_start,
+                final_name=final_name,
+                metadata=metadata,
+            )
             self.report_progress(0.90)
 
             # ── Review Before Save ────────────────────────────────────────
             if self.review_before_save and self.prompt_review_callback:
                 self.log("Warte auf Benutzerüberprüfung...")
+                review_start = time.perf_counter()
                 pre_target_path = "Sonstiges"
                 if self.organize_enabled:
                     try:
                         from core.cloud.folder_registry import FolderRegistry
                         registry = FolderRegistry(self.config.base_dir)
                         known_paths = registry.get_known_paths()
-                        res = self.llm.run_classification(fused_text, metadata, known_paths, registry.get_persons())
+                        res = self.llm.run_classification(
+                            fused_text,
+                            metadata,
+                            known_paths,
+                            registry.get_persons(),
+                            registry.get_path_contexts(),
+                        )
                         pre_target_path = res.get("recommended_path", "Sonstiges")
                     except Exception as e:
                         logger.exception("Pre-classification failed")
@@ -1082,10 +1457,18 @@ class PipelineOrchestrator:
                     self.log("Benutzer hat die Verarbeitung abgebrochen.")
                     raise RuntimeError("Benutzer hat die Verarbeitung abgebrochen.")
                 
+                previous_review_text = fused_text
                 updated_fused_text, updated_metadata, custom_final_name, chosen_target_path = review_res
                 fused_text = updated_fused_text
                 metadata = updated_metadata
                 self._chosen_target_path = chosen_target_path
+                diagnostics.stage(
+                    "manual_review",
+                    start=review_start,
+                    chosen_target_path=chosen_target_path,
+                    custom_final_name=custom_final_name,
+                    text_changed=updated_fused_text != previous_review_text,
+                )
                 if custom_final_name:
                     final_name = re.sub(r'[\/*?:"<>|]', "", custom_final_name)
                 else:
@@ -1096,7 +1479,10 @@ class PipelineOrchestrator:
                     final_name = f"{date}_{title}_{doc_type}" if date and title else "dokument_searchable"
                     final_name = re.sub(r'[\/*?:"<>|]', "", final_name)
                 
-                fused_pages = {1: fused_text}
+                if len(fused_pages or {}) <= 1:
+                    fused_pages = {1: fused_text}
+                else:
+                    self.log("Manuelle Review hat Dokumenttext geändert. PDF-Textlayer bleibt seitenweise erhalten; TXT/DOCX nutzen den geprüften Gesamttext.")
 
             self.report_progress(0.92)
 
@@ -1108,6 +1494,12 @@ class PipelineOrchestrator:
                     docx_mode=self.docx_mode,
                     large_pdf_reduced=self.large_pdf_reduced,
                 )
+                quality_report["diagnostics"] = {
+                    "enabled": self.debug_artifacts_enabled,
+                    "schema": "unified_ocr_diagnostics_v1",
+                    "note": "Vollständiger lokaler Diagnosebericht wird als separate *_debug_report.json gespeichert.",
+                }
+            stage_start = time.perf_counter()
             exported_paths = self._stage_export(source_pdf_for_export, fused_pages, fused_text, final_name, metadata, image_paths, quality_report, is_docx=is_docx)
             if not isinstance(exported_paths, dict):
                 begleit_dir = self.config.final_dir / "begleitdateien"
@@ -1117,13 +1509,26 @@ class PipelineOrchestrator:
                     "docx": (self.config.final_dir / f"{final_name}.docx") if is_docx else (begleit_dir / f"{final_name}.docx"),
                     "json": begleit_dir / f"{final_name}_quality_report.json",
                 }
+            manifest.record_outputs(exported_paths)
+            manifest.record_stage("export", "ok", artifacts=exported_paths)
+            diagnostics.stage("export", start=stage_start, outputs=exported_paths)
+            diagnostics.record_outputs(exported_paths)
 
             # ── Stage 8: Sortieren / Organize ─────────────────────────────
             moved_files = []
             target_path = ""
             if self.organize_enabled:
                 self.report_progress(0.96)
+                stage_start = time.perf_counter()
                 moved_files, target_path = self._stage_organize(fused_text, metadata, final_name, is_docx=is_docx)
+                manifest.record_stage("organize", "deferred" if moved_files and "_staging" in str(moved_files[0]) else "ok", artifacts={"moved_files": moved_files}, provenance={"target_path": target_path})
+                diagnostics.stage(
+                    "organize",
+                    status="deferred" if moved_files and "_staging" in str(moved_files[0]) else "ok",
+                    start=stage_start,
+                    target_path=target_path,
+                    moved_files=moved_files,
+                )
             
             # Prüfen, ob dieser Lauf zurückgestellt wurde
             is_deferred = False
@@ -1137,17 +1542,65 @@ class PipelineOrchestrator:
             json_file = self._resolve_exported_path(exported_paths, "json", moved_files) if not is_deferred else None
 
             # ── Google Drive Upload ───────────────────────────────────────
+            drive_uploads = []
             if self.gdrive_enabled and not is_deferred:
                 try:
-                    self._stage_gdrive_upload(
+                    stage_start = time.perf_counter()
+                    drive_uploads = self._stage_gdrive_upload(
                         pdf_file=pdf_file,
                         docx_file=docx_file,
                         json_file=json_file,
                         target_path=target_path,
                         is_docx_input=is_docx
-                    )
+                    ) or []
+                    if not isinstance(drive_uploads, list):
+                        drive_uploads = []
+                    diagnostics.stage("drive_upload", status="skipped" if not drive_uploads else "ok", start=stage_start, uploads=drive_uploads)
                 except Exception as upload_err:
                     self.log(f"Google Drive Upload-Fehler: {upload_err}")
+                    diagnostics.warn("Google Drive Upload-Fehler", error=str(upload_err))
+            manifest.record_drive_uploads(enabled=self.gdrive_enabled and not is_deferred, uploads=drive_uploads)
+            manifest.record_stage("drive_upload", "skipped" if not drive_uploads else "ok", artifacts={"uploads": drive_uploads}, provenance={"target_path": target_path})
+
+            # ── Synology/WebDAV Upload ───────────────────────────────────
+            synology_uploads = []
+            if self.synology_enabled and not is_deferred:
+                try:
+                    stage_start = time.perf_counter()
+                    synology_uploads = self._stage_synology_upload(
+                        pdf_file=pdf_file,
+                        docx_file=docx_file,
+                        json_file=json_file,
+                        target_path=target_path,
+                        is_docx_input=is_docx,
+                    ) or []
+                    if not isinstance(synology_uploads, list):
+                        synology_uploads = []
+                    diagnostics.stage("synology_upload", status="skipped" if not synology_uploads else "ok", start=stage_start, uploads=synology_uploads)
+                except Exception as upload_err:
+                    self.log(f"Synology/WebDAV Upload-Fehler: {upload_err}")
+                    diagnostics.warn("Synology/WebDAV Upload-Fehler", error=str(upload_err))
+            manifest.record_stage(
+                "synology_upload",
+                "skipped" if not synology_uploads else "ok",
+                artifacts={"uploads": synology_uploads},
+                provenance={"target_path": target_path},
+            )
+            manifest.record_sync_uploads(
+                enabled=(self.gdrive_enabled or self.synology_enabled) and not is_deferred,
+                targets={
+                    "google_drive": self.gdrive_enabled and not is_deferred,
+                    "synology_webdav": self.synology_enabled and not is_deferred,
+                },
+                uploads=[*drive_uploads, *synology_uploads],
+            )
+            diagnostics.record_sync(
+                enabled=(self.gdrive_enabled or self.synology_enabled) and not is_deferred,
+                is_deferred=is_deferred,
+                target_path=target_path,
+                google_drive_uploads=drive_uploads,
+                synology_uploads=synology_uploads,
+            )
 
             # Cleanup von ungenutzten Dateien
             if not is_deferred:
@@ -1177,6 +1630,26 @@ class PipelineOrchestrator:
                 self.log(f"-> Titel: {title} | Typ: {metadata.get('document_type', '')} | Tags: {tags}")
 
             try:
+                manifest_path = self.config.final_dir / "begleitdateien" / f"{final_name}_job_manifest.json"
+                debug_report_path = self.config.final_dir / "begleitdateien" / f"{final_name}_debug_report.json"
+                diagnostics.event("job_finished", status="deferred" if is_deferred else "completed", manifest_path=manifest_path)
+                written_debug_report = diagnostics.write_copy(debug_report_path)
+                manifest.record_stage(
+                    "diagnostics",
+                    "ok" if written_debug_report else "skipped",
+                    artifacts={"debug_report": written_debug_report},
+                )
+                manifest.finalize("deferred" if is_deferred else "completed")
+                manifest.write_copy(manifest_path)
+                if not is_deferred:
+                    local_store.index_document(
+                        source_sha256=source_sha256,
+                        source_name=filename,
+                        final_name=final_name,
+                        target_path=target_path,
+                        outputs=exported_paths,
+                        metadata=metadata,
+                    )
                 job_history.finish(
                     job_id,
                     "deferred" if is_deferred else "completed",
@@ -1194,6 +1667,18 @@ class PipelineOrchestrator:
         except Exception as e:
             logger.exception(f"Schwerwiegender Fehler bei {filename}")
             self.log(f"FEHLER bei {filename}: {e}")
+            try:
+                if diagnostics is not None:
+                    diagnostics.warn("Schwerwiegender Pipeline-Fehler", error=str(e))
+                    diagnostics.event("job_failed", error=str(e))
+                    diagnostics.write_copy(self.config.error_dir / f"{Path(filename).stem}_debug_report.json")
+                if manifest is not None:
+                    manifest.record_stage("process_file", "failed", warnings=[str(e)])
+                    manifest.finalize("failed", error=str(e))
+                    error_manifest = self.config.error_dir / f"{Path(filename).stem}_job_manifest.json"
+                    manifest.write_copy(error_manifest)
+            except Exception as manifest_err:
+                logger.warning(f"Fehler-Manifest konnte nicht geschrieben werden: {manifest_err}")
             try:
                 job_history.finish(
                     job_id,
@@ -1215,6 +1700,7 @@ class PipelineOrchestrator:
             self.report_progress(0.0)
 
         finally:
+            self._current_job_id = ""
             if work_dir.exists():
                 try:
                     shutil.rmtree(work_dir)

@@ -26,10 +26,18 @@ class GoogleDriveClient:
         try:
             creds = Credentials.from_authorized_user_file(str(t_path), SCOPES)
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-                with open(t_path, 'w', encoding='utf-8') as token_file:
-                    token_file.write(creds.to_json())
-                harden_private_file(t_path)
+                try:
+                    creds.refresh(Request())
+                    with open(t_path, 'w', encoding='utf-8') as token_file:
+                        token_file.write(creds.to_json())
+                    harden_private_file(t_path)
+                except Exception as refresh_err:
+                    logger.warning(f"Fehler beim Aktualisieren des Google-Drive-Tokens. Token wird gelöscht: {refresh_err}")
+                    try:
+                        t_path.unlink()
+                    except Exception as unlink_err:
+                        logger.error(f"Konnte ungültige Token-Datei nicht löschen: {unlink_err}")
+                    return None
             return creds
         except Exception as e:
             logger.error(f"Fehler beim Laden/Aktualisieren der Google-Drive-Anmeldedaten: {e}")

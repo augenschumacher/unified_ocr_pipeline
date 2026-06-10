@@ -190,6 +190,86 @@ class TemplateDialog(ctk.CTkToplevel):
         self.destroy()
 
 
+class ContextDialog(ctk.CTkToplevel):
+    def __init__(self, parent, path: str, context: dict, on_save):
+        super().__init__(parent)
+        self.path = path
+        self.on_save = on_save
+        self.title("Sortier-Kontext")
+        self.geometry("620x520")
+        self.minsize(560, 470)
+        self.transient(parent)
+        self.grab_set()
+        self.after(100, self.focus_force)
+
+        frame = ctk.CTkFrame(self)
+        frame.pack(fill="both", expand=True, padx=18, pady=18)
+        frame.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            frame,
+            text=path,
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+
+        ctk.CTkLabel(
+            frame,
+            text="Diese Hinweise verbessern die automatische Einordnung fuer diesen Pfad.",
+            text_color="gray",
+        ).grid(row=1, column=0, sticky="w", pady=(0, 12))
+
+        ctk.CTkLabel(frame, text="Objekttyp:").grid(row=2, column=0, sticky="w")
+        self.object_type_var = ctk.StringVar(value=context.get("object_type", "") or "")
+        ctk.CTkOptionMenu(
+            frame,
+            variable=self.object_type_var,
+            values=["", "person", "vehicle", "hobby", "insurance", "health", "contract", "property", "other"],
+        ).grid(row=3, column=0, sticky="w", pady=(4, 12))
+
+        ctk.CTkLabel(frame, text="Aliase / eindeutige Namen:").grid(row=4, column=0, sticky="w")
+        self.aliases_box = ctk.CTkTextbox(frame, height=70)
+        self.aliases_box.grid(row=5, column=0, sticky="ew", pady=(4, 10))
+        self.aliases_box.insert("1.0", "\n".join(context.get("aliases") or []))
+
+        ctk.CTkLabel(frame, text="Stichworte / Kennzeichen / Merkmale:").grid(row=6, column=0, sticky="w")
+        self.keywords_box = ctk.CTkTextbox(frame, height=90)
+        self.keywords_box.grid(row=7, column=0, sticky="ew", pady=(4, 10))
+        self.keywords_box.insert("1.0", "\n".join(context.get("keywords") or []))
+
+        ctk.CTkLabel(frame, text="Notizen:").grid(row=8, column=0, sticky="w")
+        self.notes_box = ctk.CTkTextbox(frame, height=100)
+        self.notes_box.grid(row=9, column=0, sticky="nsew", pady=(4, 14))
+        self.notes_box.insert("1.0", context.get("notes", ""))
+
+        button_row = ctk.CTkFrame(frame, fg_color="transparent")
+        button_row.grid(row=10, column=0, sticky="ew")
+        ctk.CTkButton(button_row, text="Abbrechen", width=120, command=self.destroy).pack(side="left")
+        ctk.CTkButton(button_row, text="Speichern", width=140, command=self.save).pack(side="right")
+
+    @staticmethod
+    def _split_terms(text: str) -> list[str]:
+        raw = (text or "").replace(",", "\n").splitlines()
+        cleaned = []
+        seen = set()
+        for value in raw:
+            item = " ".join(value.strip().split())
+            key = item.casefold()
+            if item and key not in seen:
+                cleaned.append(item)
+                seen.add(key)
+        return cleaned
+
+    def save(self):
+        context = {
+            "object_type": self.object_type_var.get().strip(),
+            "aliases": self._split_terms(self.aliases_box.get("1.0", "end-1c")),
+            "keywords": self._split_terms(self.keywords_box.get("1.0", "end-1c")),
+            "notes": self.notes_box.get("1.0", "end-1c").strip(),
+        }
+        self.on_save(self.path, context)
+        self.destroy()
+
+
 class PathManagerWindow(ctk.CTkToplevel):
     def __init__(
         self,
@@ -207,6 +287,7 @@ class PathManagerWindow(ctk.CTkToplevel):
 
         self.registry = FolderRegistry(self.base_dir)
         self.tree = self.registry.get_tree()
+        self.path_contexts = dict(self.registry.get_path_contexts())
 
         self.title("Pfad-Konfiguration & Setup-Wizard")
         self.geometry("900x590")
@@ -499,6 +580,7 @@ class PathManagerWindow(ctk.CTkToplevel):
             children = []
 
         for child in children:
+            full_path = "/".join([*self.selected_parent_path, child])
             row_frame = ctk.CTkFrame(self.right_scroll, fg_color="transparent")
             row_frame.pack(fill="x", pady=3)
 
@@ -508,6 +590,18 @@ class PathManagerWindow(ctk.CTkToplevel):
 
             lbl = ctk.CTkLabel(card_frame, text=child, font=ctk.CTkFont(size=13), anchor="w")
             lbl.pack(fill="both", expand=True, padx=10)
+
+            context_exists = bool(self.path_contexts.get(full_path))
+            context_btn = ctk.CTkButton(
+                row_frame,
+                text="Info" if context_exists else "+Info",
+                width=58,
+                height=35,
+                fg_color=self.color_active if context_exists else self.color_inactive,
+                text_color="white" if context_exists else self.color_tab_inactive_text,
+                command=lambda p=full_path: self.open_context_dialog(p),
+            )
+            context_btn.pack(side="right", padx=(0, 5))
 
             del_btn = ctk.CTkButton(
                 row_frame,
@@ -558,6 +652,31 @@ class PathManagerWindow(ctk.CTkToplevel):
         self.new_entry.focus()
         self.populate_right_panel()
 
+    def open_context_dialog(self, path: str):
+        ContextDialog(self, path, self.path_contexts.get(path, {}), self.save_path_context)
+
+    def save_path_context(self, path: str, context: dict):
+        cleaned = {
+            "object_type": context.get("object_type", "").strip(),
+            "aliases": self.registry._clean_context_list(context.get("aliases", [])),
+            "keywords": self.registry._clean_context_list(context.get("keywords", [])),
+            "notes": context.get("notes", "").strip(),
+        }
+        if any(cleaned.values()):
+            self.path_contexts[path] = cleaned
+        else:
+            self.path_contexts.pop(path, None)
+        self.populate_right_panel()
+
+    def _filtered_contexts(self) -> dict:
+        valid_paths = {"/".join(parts) for parts in iter_tree_paths(self.tree)}
+        return {path: ctx for path, ctx in self.path_contexts.items() if path in valid_paths}
+
+    def _save_tree_and_contexts(self):
+        self.registry.save_tree(self.tree)
+        self.registry.data["path_contexts"] = self._filtered_contexts()
+        self.registry.save()
+
     def open_template_dialog(self):
         TemplateDialog(self, list(self.tree.keys()), self.apply_template)
 
@@ -583,7 +702,7 @@ class PathManagerWindow(ctk.CTkToplevel):
             return
 
         try:
-            self.registry.save_tree(self.tree)
+            self._save_tree_and_contexts()
             preview = build_drive_sync_preview(self.registry)
         except Exception as e:
             messagebox.showerror("Fehler", f"Die Ablagestruktur konnte nicht vorbereitet werden:\n{e}")
@@ -627,6 +746,7 @@ class PathManagerWindow(ctk.CTkToplevel):
         self.drive_sync_btn.configure(state="normal", text="Google Drive sync...")
         self.registry = FolderRegistry(self.base_dir)
         self.tree = self.registry.get_tree()
+        self.path_contexts = dict(self.registry.get_path_contexts())
         self.populate_right_panel()
         if error:
             messagebox.showerror("Google Drive Sync fehlgeschlagen", str(error))
@@ -662,7 +782,7 @@ class PathManagerWindow(ctk.CTkToplevel):
             return
 
         try:
-            self.registry.save_tree(self.tree)
+            self._save_tree_and_contexts()
             created = create_final_directories(self.base_dir, self.tree)
             if self.on_save_callback:
                 self.on_save_callback(created)

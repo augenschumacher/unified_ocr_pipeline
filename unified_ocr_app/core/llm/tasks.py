@@ -15,6 +15,7 @@ erfolgt über strukturierte CacheInput-Objekte mit SHA-256-basierten v2-Keys.
 import json
 from .ollama_client import OllamaClient
 from core.cache import CacheInput, sha256_file, sha256_text
+from core.privacy import is_external_model, redact_sensitive_text
 
 # Eingabelängenbegrenzung (Zeichen) – verhindert Context-Overflow
 _MAX_DOCLING_CHARS = 8_000
@@ -41,6 +42,7 @@ class LLMClient(OllamaClient):
         keep_alive:     str  = "15m",
         prompt_version: int  = 1,
         force_pipeline: bool = False,
+        redact_cloud_inputs: bool = False,
     ):
         super().__init__(prompts=prompts, log_callback=log_callback, keep_alive=keep_alive)
         self.vision_model    = vision_model
@@ -51,6 +53,14 @@ class LLMClient(OllamaClient):
         self.think_analysis  = think_analysis
         self.prompt_version  = prompt_version
         self.force_pipeline  = force_pipeline
+        self.redact_cloud_inputs = redact_cloud_inputs
+
+    def _query_with_privacy(self, model: str, system_prompt: str, user_prompt: str, *args, raw_text: str = "", **kwargs):
+        if self.redact_cloud_inputs and is_external_model(model):
+            user_prompt = redact_sensitive_text(user_prompt)
+            raw_text = redact_sensitive_text(raw_text)
+            self._log(f"  Datenschutz: Texteingabe fuer externes Modell redigiert ({model}).")
+        return self.query(model, system_prompt, user_prompt, *args, raw_text=raw_text, **kwargs)
 
     # ------------------------------------------------------------------ #
     #  Phase 2b – GLM-OCR                                                  #
@@ -83,7 +93,7 @@ class LLMClient(OllamaClient):
             options={"page_num": page_num},
         )
         try:
-            return self.query(
+            return self._query_with_privacy(
                 self.glm_ocr_model, sys_prompt,
                 user_prompt,
                 image_path, think=False, max_tokens=4096,
@@ -127,7 +137,7 @@ class LLMClient(OllamaClient):
             options={"page_num": page_num},
         )
         try:
-            return self.query(
+            return self._query_with_privacy(
                 self.vision_model, system_prompt,
                 user_prompt, image_path, max_tokens=4096,
                 raw_text=img_hash,
@@ -169,7 +179,7 @@ class LLMClient(OllamaClient):
             options={"page_num": page_num},
         )
         try:
-            return self.query(
+            return self._query_with_privacy(
                 self.vision_model, system_prompt,
                 user_prompt, image_path, max_tokens=4096,
                 raw_text=page_markdown,
@@ -266,7 +276,7 @@ class LLMClient(OllamaClient):
             },
         )
 
-        return self.query(
+        return self._query_with_privacy(
             self.fusion_model,
             system_prompt,
             user_prompt,
@@ -300,7 +310,7 @@ class LLMClient(OllamaClient):
 
         for _ in range(2):
             try:
-                res = self.query(
+                res = self._query_with_privacy(
                     self.analysis_model,
                     self._get_prompt("analysis", default_sys),
                     text_input,
@@ -320,9 +330,17 @@ class LLMClient(OllamaClient):
     #  Phase 8 – Dokumenten-Klassifikation                               #
     # ------------------------------------------------------------------ #
 
-    def run_classification(self, fused_text: str, metadata: dict, known_paths: list, valid_persons: list) -> dict:
+    def run_classification(
+        self,
+        fused_text: str,
+        metadata: dict,
+        known_paths: list,
+        valid_persons: list,
+        path_contexts: dict | None = None,
+        memory_candidates: list[dict] | None = None,
+    ) -> dict:
         """
         Klassifiziert das Dokument.
         """
         from core.cloud.classifier import classify_document
-        return classify_document(fused_text, metadata, known_paths, self, valid_persons)
+        return classify_document(fused_text, metadata, known_paths, self, valid_persons, path_contexts, memory_candidates)

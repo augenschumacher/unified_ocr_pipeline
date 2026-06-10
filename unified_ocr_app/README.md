@@ -1,12 +1,13 @@
 # Unified OCR App
 
 Unified OCR App ist eine lokale Windows-Desktop-App fuer OCR, LLM-gestuetzte
-Nachverarbeitung, Dokumentexport und optionale Google-Drive-Ablage.
+Nachverarbeitung, Dokumentexport und optionale Google-Drive- oder
+Synology/WebDAV-Ablage.
 
 Die App ist fuer private Dokumenten-Workflows gedacht: Eingangsordner
 ueberwachen, Dokumente per OCR/Docling auslesen, Ergebnisse als PDF/TXT/DOCX
-speichern, optional mit LLMs verbessern und in einer lokalen oder
-Google-Drive-Ablagestruktur organisieren.
+speichern, optional mit LLMs verbessern und in einer lokalen, Google-Drive-
+oder Synology/WebDAV-Ablagestruktur organisieren.
 
 ## Features
 
@@ -16,8 +17,18 @@ Google-Drive-Ablagestruktur organisieren.
 - Unterstuetzung fuer lokale Ollama-Modelle und API-Provider ueber LiteLLM
 - Lokaler Export als PDF, TXT, DOCX und optional JSON
 - Ablagestrukturverwaltung mit Personen/Hauptbereichen und Kategorien
+- Kontextbasierte Sortierhinweise pro Pfad, z. B. Fahrzeuge, Hobbys, Kennzeichen oder Aliase
+- Progressiver Lernspeicher fuer bestaetigte Sortierentscheidungen mit mehreren Pfadvorschlaegen
+- Lokale SQLite-Datenbank fuer Job-State, Dokumentindex, Review-Queue und Duplikaterkennung
+- Systemcheck fuer Python, Tesseract, OCRmyPDF, Ghostscript und Schreibrechte
+- Optionale Redaction sensibler Texte vor externen LLM-Aufrufen
 - Optionaler Google-Drive-Upload und Google-Drive-Ordnersync
+- Optionaler Synology/WebDAV-Upload mit gleicher Ablagestruktur
+- Verbesserter PDF-Textlayer mit blockweiser Lesereihenfolge fuer mehrspaltige Seiten
 - Job-Historie unter `<Basisordner>/logs/job_history.jsonl`
+- Job-Manifeste pro Verarbeitungslauf mit Stage-Status, Artefakten, Hashes und Sync-Upload-Audit
+- Optionale Debug-/Diagnoseberichte pro Job mit Stage-Dauern, Textquellen-Statistiken, Layoutpaketen und Output-Hashes
+- Datenschutzmodus `local_only`, der Cloud-LLMs, Google Drive und nicht-lokale WebDAV-Ziele fuer neue Jobs deaktiviert
 - Runtime-Audit in Qualitaetsberichten mit Modellnamen, Optionen und Prompt-Fingerprints
 
 ## Status
@@ -38,6 +49,7 @@ LLM-Provider und Ausgabedateien mit Testdokumenten geprueft werden.
 - OCRmyPDF-kompatible Systemumgebung
 - Optional: Ollama mit lokalen Modellen
 - Optional: Google OAuth Desktop Client fuer Google Drive
+- Optional: Synology WebDAV Server, empfohlen per HTTPS auf Port 5006
 - Optional: API-Keys fuer Gemini, OpenAI oder Mistral
 
 ## Installation
@@ -94,9 +106,45 @@ Dokumentensortierung aktiv ist und noch keine Ablagepfade existieren.
 - Wenn die Dokumentensortierung deaktiviert ist, kann die Ueberwachung auch ohne Ablagepfade gestartet werden.
 - Die Ablagestruktur kann spaeter in der App erweitert oder geaendert werden.
 
+### Intelligente Sortier-Kontexte
+
+In der Ablagestrukturverwaltung kann zu jedem Pfad ueber `+Info` ein
+Sortier-Kontext hinterlegt werden. Diese Informationen werden lokal in
+`folder_registry.json` gespeichert und bei der automatischen Einordnung
+beruecksichtigt.
+
+Typische Beispiele:
+
+- `Fabio/Auto/Golf`: Objekttyp `vehicle`, Aliase `Golf 7`, Stichworte `AB CD 123`, `Inspektion`, `HU`
+- `Fabio/Auto/Tesla`: Objekttyp `vehicle`, Aliase `Model 3`, Stichworte `EF GH 456`, `Supercharger`
+- `Jan/Hobby/Tennis`: Objekttyp `hobby`, Aliase `Tennisverein`, Stichworte `Mitgliedsbeitrag`, `Training`
+
+Wenn ein Dokument eindeutig zu einem Kontext passt, wird dieser Pfad vor der
+LLM-Klassifikation bevorzugt. Bei unsicheren Treffern greift weiterhin die
+bestehende LLM-Klassifikation und der Review-/Staging-Mechanismus.
+
+Zusaetzlich fuehrt die App einen lokalen Lernspeicher
+`classification_memory.json`. Wenn ein unsicherer Vorschlag bestaetigt oder
+korrigiert wird, merkt sich die App die Entscheidung mit relevanten Begriffen
+aus Text und Metadaten. Bei spaeteren aehnlichen Dokumenten entstehen daraus
+mehrere Pfadvorschlaege mit Score und Begruendung. Nur unsichere oder sehr nahe
+Kandidaten werden abgefragt; eindeutige Treffer werden automatisch einsortiert.
+
+Unsichere Sortierungen und neue Pfadvorschlaege werden zusaetzlich in der
+lokalen Review-Queue gespeichert. Die App zeigt mehrere Kandidaten mit Score
+und Begruendung an. Bestaetigte oder korrigierte Entscheidungen verbessern den
+Lernspeicher.
+
 ## LLM Provider
 
 Die App unterstuetzt lokale Ollama-Modelle und API-Provider ueber LiteLLM.
+
+In den Einstellungen kann der Datenschutzmodus auf `local_only` gesetzt werden.
+Dann werden fuer neue Jobs externe Cloud-Modelle, Google Drive und nicht-lokale
+WebDAV-Ziele deaktiviert. Lokale NAS-Adressen wie `nas.local`, `diskstation`
+oder private IP-Adressen koennen weiter genutzt werden. Das ist der empfohlene
+Modus fuer besonders sensible Dokumente, wenn ausschliesslich lokale
+Verarbeitung gewuenscht ist.
 
 Wichtig: Google Drive OAuth und Google Gemini API sind getrennt.
 
@@ -179,6 +227,28 @@ Solange die Google-App nicht verifiziert ist, kann Google beim Login eine
 Warnung anzeigen oder nur Testnutzer zulassen. Das ist normal fuer unverifizierte
 OAuth-Apps.
 
+## Synology / WebDAV
+
+Synology ist optional und nutzt den WebDAV Server deiner DiskStation. Die App
+erstellt fehlende Zielordner per WebDAV `MKCOL` und laedt Dateien per `PUT`
+hoch. Bereits vorhandene Dateien werden auf WebDAV-Seite ueberschrieben bzw.
+aktualisiert.
+
+Empfohlene Einrichtung:
+
+1. Auf der Synology den WebDAV Server installieren und aktivieren.
+2. HTTPS/WebDAV auf Port `5006` verwenden.
+3. Einen eigenen Benutzer fuer die App anlegen.
+4. Diesem Benutzer Schreibrechte nur auf den gewuenschten Zielordner geben.
+5. In der App `Synology / WebDAV Upload` aktivieren.
+6. WebDAV-URL eintragen, z. B. `https://nas.local:5006`.
+7. Optional eine Zielwurzel eintragen, z. B. `OCR`.
+8. Benutzername und Passwort eintragen und `Verbindung testen` klicken.
+
+Hinweis: Das Passwort wird derzeit in den lokalen App-Einstellungen gespeichert.
+Diese Datei gehoert niemals ins Repository. Fuer eine spaetere harte
+Produktversion waere der Windows Credential Manager die bessere Ablage.
+
 ## Laufzeitdaten
 
 Benutzerspezifische Daten werden unter folgendem Ordner gespeichert:
@@ -193,6 +263,25 @@ Dort koennen insbesondere liegen:
 - `llm_config.yaml`
 - `credentials.json`
 - `google_drive_token.json`
+- `classification_memory.json`
+- `unified_ocr.sqlite3`
+
+Pro Job erzeugt die App zusaetzlich ein Manifest. Bei erfolgreichen Jobs wird
+es unter `<Basisordner>/final/begleitdateien/*_job_manifest.json` abgelegt, bei
+fehlgeschlagenen Jobs im Error-Bereich. Darin stehen Eingabe-Hashes,
+Pipeline-Stages, erzeugte Ausgabepfade, Metadaten und optional Google-Drive-
+Upload-IDs.
+
+Wenn `Debug-/Diagnoseberichte speichern` aktiviert ist, schreibt die App
+zusaetzlich `<Basisordner>/final/begleitdateien/*_debug_report.json`; bei
+Fehlern landet der Bericht im Error-Bereich. Der Diagnosebericht enthaelt
+Stage-Dauern, Modellnamen, Textlaengen, SHA-256-Hashes, kurze Textvorschauen,
+Layoutpakete, Output-Dateigroessen und Sync-Ergebnisse. API-Keys, Tokens,
+Passwoerter und Credentials werden redigiert.
+
+Die Datei `unified_ocr.sqlite3` enthaelt lokale Laufzeitdaten wie Job-Zustaende,
+Dokumentenindex, Duplikat-Referenzen und Review-Queue. Sie ist privat und sollte
+nicht veroeffentlicht werden.
 
 Der App-Ordner selbst sollte keine Tokens, Credentials, Logs oder lokalen
 Settings enthalten. Die `.gitignore` schliesst diese Dateien aus, eine manuelle
@@ -239,8 +328,9 @@ Vor einem Release:
 3. Basisordner und Setup-Wizard pruefen.
 4. Ein Testdokument in den Eingangsordner legen.
 5. Ergebnisdateien, Qualitaetsbericht und Job-Historie pruefen.
-6. Google Drive nur mit Testdaten pruefen.
-7. Sicherstellen, dass keine Dateien wie `settings.json`, `llm_config.yaml`, `credentials.json`, `google_drive_token.json`, `token.json`, `.env`, `*.key` oder `*.pem` im Repository liegen.
+6. Job-Manifest im Ordner `begleitdateien` pruefen.
+7. Google Drive nur mit Testdaten pruefen.
+8. Sicherstellen, dass keine Dateien wie `settings.json`, `llm_config.yaml`, `credentials.json`, `google_drive_token.json`, `token.json`, `.env`, `*.key` oder `*.pem` im Repository liegen.
 
 ## Bekannte Grenzen
 
@@ -248,4 +338,6 @@ Vor einem Release:
 - LLM-Ergebnisse muessen bei wichtigen medizinischen, finanziellen oder rechtlichen Dokumenten manuell geprueft werden.
 - Cloud- und API-Provider koennen Kosten verursachen oder Kontingente begrenzen.
 - Google Drive Sync erstellt fehlende Ordner und speichert Drive-IDs, loescht aber keine Drive-Ordner.
+- Synology/WebDAV Sync erstellt fehlende Ordner und laedt Dateien in die gleiche Zielstruktur hoch.
+- Der finale PDF-Textlayer wird blockweise aufgebaut. Bei typischen zweispaltigen Seiten wird links vor rechts gelesen; sehr komplexe Layouts sollten weiterhin stichprobenartig geprueft werden.
 - Wenn die dokumentweite Qualitaetskorrektur Text veraendert, bleibt der PDF-Textlayer seitenweise aus der urspruenglichen Fusion erhalten; der korrigierte Gesamttext wird fuer TXT/DOCX/Metadaten genutzt.

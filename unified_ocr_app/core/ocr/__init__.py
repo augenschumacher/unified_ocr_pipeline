@@ -11,7 +11,10 @@ from .docling_runner import run_docling_by_page_with_chunks
 from .page_extractor import (
     extract_pages_as_images,
     extract_ocr_text_per_page,
+    extract_ordered_text_blocks_per_page,
     inject_fused_text_and_metadata,
+    order_text_blocks,
+    split_text_into_packets,
 )
 
 __all__ = [
@@ -21,5 +24,8 @@ __all__ = [
     "run_docling_by_page_with_chunks",
     "extract_pages_as_images",
     "extract_ocr_text_per_page",
+    "extract_ordered_text_blocks_per_page",
     "inject_fused_text_and_metadata",
+    "order_text_blocks",
+    "split_text_into_packets",
 ]

@@ -47,6 +47,8 @@ class App(ctk.CTk):
         self.think_analysis_var = ctk.BooleanVar(value=False)
         self.organize_enabled_var = ctk.BooleanVar(value=True)
         self.gdrive_enabled_var = ctk.BooleanVar(value=False)
+        self.privacy_mode_var = ctk.StringVar(value="standard")
+        self.redact_cloud_inputs_var = ctk.BooleanVar(value=False)
         self.gdrive_credentials_path_var = ctk.StringVar(value=str(default_credentials_path()))
         self.gdrive_token_path_var = ctk.StringVar(value=str(default_token_path()))
         self.gdrive_status_var = ctk.StringVar(value="Nicht verknüpft")
@@ -55,11 +57,26 @@ class App(ctk.CTk):
         self.gdrive_upload_pdf_var = ctk.BooleanVar(value=True)
         self.gdrive_upload_docx_var = ctk.BooleanVar(value=False)
         self.gdrive_upload_json_var = ctk.BooleanVar(value=False)
+        self.synology_enabled_var = ctk.BooleanVar(value=False)
+        self.synology_base_url_var = ctk.StringVar(value="")
+        self.synology_username_var = ctk.StringVar(value="")
+        self.synology_password_var = ctk.StringVar(value="")
+        self.synology_root_path_var = ctk.StringVar(value="")
+        self.synology_upload_pdf_var = ctk.BooleanVar(value=True)
+        self.synology_upload_docx_var = ctk.BooleanVar(value=False)
+        self.synology_upload_json_var = ctk.BooleanVar(value=False)
         self.unload_models_enabled_var = ctk.BooleanVar(value=True)
         self.system_tray_enabled_var = ctk.BooleanVar(value=True)
         self.review_before_save_var = ctk.BooleanVar(value=False)
         self.large_pdf_reduced_var = ctk.BooleanVar(value=True)
         self.force_pipeline_var = ctk.BooleanVar(value=False)
+        self.debug_artifacts_enabled_var = ctk.BooleanVar(value=True)
+        self.status_watcher_var = ctk.StringVar(value="Bereit")
+        self.status_privacy_var = ctk.StringVar(value="standard")
+        self.status_consume_var = ctk.StringVar(value="0 Dateien")
+        self.status_review_var = ctk.StringVar(value="0 offen")
+        self.status_paths_var = ctk.StringVar(value="0 Pfade")
+        self.progress_text_var = ctk.StringVar(value="0 %")
         self.saved_models       = {}
         self.saved_prompts      = {}
         self.prompt_version     = 1
@@ -98,9 +115,56 @@ class App(ctk.CTk):
         self.scroll_settings.grid(row=0, column=0, sticky="nsew")
         self.scroll_settings.grid_columnconfigure(0, weight=1)
 
+        dashboard_frame = ctk.CTkFrame(self.scroll_main)
+        dashboard_frame.grid(row=0, column=0, padx=12, pady=(12, 6), sticky="ew")
+        for col in range(5):
+            dashboard_frame.grid_columnconfigure(col, weight=1, uniform="dashboard")
+
+        status_specs = [
+            ("Status", self.status_watcher_var),
+            ("Datenschutz", self.status_privacy_var),
+            ("Eingang", self.status_consume_var),
+            ("Review", self.status_review_var),
+            ("Ablagepfade", self.status_paths_var),
+        ]
+        for col, (title, variable) in enumerate(status_specs):
+            status_card = ctk.CTkFrame(dashboard_frame)
+            status_card.grid(row=0, column=col, padx=6, pady=(10, 6), sticky="nsew")
+            ctk.CTkLabel(
+                status_card,
+                text=title,
+                text_color="gray",
+                font=ctk.CTkFont(size=11),
+            ).grid(row=0, column=0, padx=10, pady=(8, 0), sticky="w")
+            ctk.CTkLabel(
+                status_card,
+                textvariable=variable,
+                font=ctk.CTkFont(size=14, weight="bold"),
+            ).grid(row=1, column=0, padx=10, pady=(0, 9), sticky="w")
+
+        quick_frame = ctk.CTkFrame(dashboard_frame, fg_color="transparent")
+        quick_frame.grid(row=1, column=0, columnspan=5, padx=6, pady=(0, 10), sticky="ew")
+        for col in range(5):
+            quick_frame.grid_columnconfigure(col, weight=1, uniform="quick")
+
+        quick_actions = [
+            ("Eingang öffnen", self._open_consume_folder),
+            ("Final öffnen", self._open_final_folder),
+            ("Bibliothek", self._open_document_library),
+            ("Review-Queue", self._open_review_queue),
+            ("Systemcheck", self._run_system_check_dialog),
+        ]
+        for col, (label, command) in enumerate(quick_actions):
+            ctk.CTkButton(
+                quick_frame,
+                text=label,
+                command=command,
+                height=34,
+            ).grid(row=0, column=col, padx=4, pady=0, sticky="ew")
+
         # â”€â”€ Ordner-Auswahl â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         dir_frame = ctk.CTkFrame(self.scroll_main)
-        dir_frame.grid(row=0, column=0, padx=12, pady=(12, 6), sticky="ew")
+        dir_frame.grid(row=1, column=0, padx=12, pady=6, sticky="ew")
         dir_frame.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(dir_frame, text="Basis-Ordner:").grid(row=0, column=0, padx=10, pady=10)
@@ -116,7 +180,7 @@ class App(ctk.CTk):
 
         # â”€â”€ Modell-Auswahl â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         llm_frame = ctk.CTkFrame(self.scroll_main)
-        llm_frame.grid(row=1, column=0, padx=12, pady=6, sticky="ew")
+        llm_frame.grid(row=2, column=0, padx=12, pady=6, sticky="ew")
         llm_frame.grid_columnconfigure(1, weight=1)
 
         model_rows = [
@@ -145,7 +209,7 @@ class App(ctk.CTk):
 
         # â”€â”€ Ausgabeformat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         fmt_frame = ctk.CTkFrame(self.scroll_main)
-        fmt_frame.grid(row=2, column=0, padx=12, pady=6, sticky="ew")
+        fmt_frame.grid(row=3, column=0, padx=12, pady=6, sticky="ew")
         fmt_frame.grid_columnconfigure(1, weight=1)
         fmt_frame.grid_columnconfigure(3, weight=1)
 
@@ -169,7 +233,7 @@ class App(ctk.CTk):
 
         # â”€â”€ Watchdog-Button â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         ctrl_frame = ctk.CTkFrame(self.scroll_main)
-        ctrl_frame.grid(row=3, column=0, padx=12, pady=6, sticky="ew")
+        ctrl_frame.grid(row=4, column=0, padx=12, pady=6, sticky="ew")
         ctrl_frame.grid_columnconfigure(0, weight=1)
 
         self.toggle_btn = ctk.CTkButton(
@@ -182,13 +246,23 @@ class App(ctk.CTk):
 
         # â”€â”€ Fortschrittsbalken â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self.progress_var = ctk.DoubleVar(value=0.0)
-        prog_bar = ctk.CTkProgressBar(self.scroll_main, variable=self.progress_var)
-        prog_bar.grid(row=4, column=0, padx=12, pady=(0, 6), sticky="ew")
+        progress_frame = ctk.CTkFrame(self.scroll_main, fg_color="transparent")
+        progress_frame.grid(row=5, column=0, padx=12, pady=(0, 6), sticky="ew")
+        progress_frame.grid_columnconfigure(0, weight=1)
+        prog_bar = ctk.CTkProgressBar(progress_frame, variable=self.progress_var)
+        prog_bar.grid(row=0, column=0, padx=(0, 8), pady=0, sticky="ew")
+        ctk.CTkLabel(
+            progress_frame,
+            textvariable=self.progress_text_var,
+            width=54,
+            anchor="e",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).grid(row=0, column=1, padx=0, pady=0, sticky="e")
 
         # â”€â”€ Log-Box â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Feste Höhe: die Box hat ihren eigenen Scrollbalken
         self.log_box = ctk.CTkTextbox(self.scroll_main, height=260, state="disabled")
-        self.log_box.grid(row=5, column=0, padx=12, pady=(0, 12), sticky="ew")
+        self.log_box.grid(row=6, column=0, padx=12, pady=(0, 12), sticky="ew")
 
         # ================================================================ #
         #  Einstellungen-Tab                                               #
@@ -230,6 +304,14 @@ class App(ctk.CTk):
             btn_frame, text="Liste neu laden", command=self._reload_paths_list, width=120
         ).grid(row=0, column=1, padx=5, pady=5, sticky="w")
 
+        ctk.CTkButton(
+            btn_frame, text="Bibliothek", command=self._open_document_library, width=110
+        ).grid(row=0, column=2, padx=5, pady=5, sticky="w")
+
+        ctk.CTkButton(
+            btn_frame, text="Review-Queue", command=self._open_review_queue, width=120
+        ).grid(row=0, column=3, padx=5, pady=5, sticky="w")
+
         # â”€â”€ Dateiexport-Optionen Sektion â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         ctk.CTkLabel(
             self.scroll_settings, text="Dateiexport-Optionen:",
@@ -249,6 +331,27 @@ class App(ctk.CTk):
             export_options_frame, text="JSON-Qualitätsbericht speichern (im Ordner 'begleitdateien')",
             variable=self.save_json_enabled_var,
         ).grid(row=1, column=0, padx=10, pady=(0, 7), sticky="w")
+
+        privacy_frame = ctk.CTkFrame(export_options_frame, fg_color="transparent")
+        privacy_frame.grid(row=2, column=0, padx=10, pady=(0, 8), sticky="ew")
+        privacy_frame.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(privacy_frame, text="Datenschutzmodus:").grid(row=0, column=0, padx=(0, 10), pady=4, sticky="w")
+        ctk.CTkOptionMenu(
+            privacy_frame,
+            variable=self.privacy_mode_var,
+            values=["standard", "local_only"],
+        ).grid(row=0, column=1, padx=0, pady=4, sticky="w")
+        ctk.CTkLabel(
+            privacy_frame,
+            text="local_only deaktiviert Cloud-LLMs und Google Drive für neue Jobs.",
+            text_color="gray",
+            font=ctk.CTkFont(size=11),
+        ).grid(row=1, column=0, columnspan=2, padx=0, pady=(0, 2), sticky="w")
+        ctk.CTkCheckBox(
+            privacy_frame,
+            text="Sensible Texte vor externen LLMs maskieren",
+            variable=self.redact_cloud_inputs_var,
+        ).grid(row=2, column=0, columnspan=2, padx=0, pady=(4, 2), sticky="w")
 
         # â”€â”€ Google Drive Cloud-Upload Sektion â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         ctk.CTkLabel(
@@ -369,14 +472,83 @@ class App(ctk.CTk):
         )
         self.gdrive_unlink_btn.grid(row=0, column=1, padx=5, pady=5)
 
+        ctk.CTkLabel(
+            self.scroll_settings, text="Synology / WebDAV Upload:",
+            font=ctk.CTkFont(size=13, weight="bold")
+        ).grid(row=12, column=0, padx=10, pady=(15, 2), sticky="w")
+
+        synology_frame = ctk.CTkFrame(self.scroll_settings)
+        synology_frame.grid(row=13, column=0, padx=10, pady=5, sticky="ew")
+        synology_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkCheckBox(
+            synology_frame,
+            text="Nach Synology/WebDAV hochladen",
+            variable=self.synology_enabled_var,
+        ).grid(row=0, column=0, columnspan=3, padx=10, pady=10, sticky="w")
+
+        synology_types_frame = ctk.CTkFrame(synology_frame, fg_color="transparent")
+        synology_types_frame.grid(row=1, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w")
+        ctk.CTkCheckBox(
+            synology_types_frame, text="PDF hochladen",
+            variable=self.synology_upload_pdf_var,
+        ).pack(side="left", padx=(0, 15))
+        ctk.CTkCheckBox(
+            synology_types_frame, text="DOCX hochladen",
+            variable=self.synology_upload_docx_var,
+        ).pack(side="left", padx=(0, 15))
+        ctk.CTkCheckBox(
+            synology_types_frame, text="JSON hochladen",
+            variable=self.synology_upload_json_var,
+        ).pack(side="left")
+
+        ctk.CTkLabel(synology_frame, text="WebDAV-URL:").grid(row=2, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkEntry(
+            synology_frame,
+            textvariable=self.synology_base_url_var,
+            placeholder_text="https://dein-nas:5006",
+        ).grid(row=2, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
+
+        ctk.CTkLabel(synology_frame, text="Zielwurzel:").grid(row=3, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkEntry(
+            synology_frame,
+            textvariable=self.synology_root_path_var,
+            placeholder_text="optional, z. B. OCR",
+        ).grid(row=3, column=1, columnspan=2, padx=10, pady=5, sticky="ew")
+
+        ctk.CTkLabel(synology_frame, text="Benutzer:").grid(row=4, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkEntry(synology_frame, textvariable=self.synology_username_var).grid(
+            row=4, column=1, columnspan=2, padx=10, pady=5, sticky="ew"
+        )
+
+        ctk.CTkLabel(synology_frame, text="Passwort:").grid(row=5, column=0, padx=10, pady=5, sticky="w")
+        ctk.CTkEntry(synology_frame, textvariable=self.synology_password_var, show="*").grid(
+            row=5, column=1, columnspan=2, padx=10, pady=5, sticky="ew"
+        )
+
+        ctk.CTkLabel(
+            synology_frame,
+            text="Empfohlen: HTTPS/WebDAV auf Port 5006 und ein eigener NAS-Benutzer mit Schreibrechten nur im Zielordner.",
+            text_color="gray",
+            font=ctk.CTkFont(size=11),
+            wraplength=650,
+        ).grid(row=6, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="w")
+
+        ctk.CTkButton(
+            synology_frame,
+            text="Verbindung testen",
+            command=self._test_synology_connection,
+            width=160,
+        ).grid(row=7, column=0, padx=10, pady=(0, 10), sticky="w")
+
         # â”€â”€ Große PDFs (> 20 Seiten) Sektion â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         ctk.CTkLabel(
             self.scroll_settings, text="Große PDFs (> 20 Seiten):",
             font=ctk.CTkFont(size=13, weight="bold")
-        ).grid(row=12, column=0, padx=10, pady=(15, 2), sticky="w")
+        ).grid(row=14, column=0, padx=10, pady=(15, 2), sticky="w")
 
         large_pdf_frame = ctk.CTkFrame(self.scroll_settings)
-        large_pdf_frame.grid(row=13, column=0, padx=10, pady=5, sticky="ew")
+        large_pdf_frame.grid(row=15, column=0, padx=10, pady=5, sticky="ew")
         large_pdf_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkCheckBox(
@@ -388,10 +560,10 @@ class App(ctk.CTk):
         ctk.CTkLabel(
             self.scroll_settings, text="System-Optionen:",
             font=ctk.CTkFont(size=13, weight="bold")
-        ).grid(row=14, column=0, padx=10, pady=(15, 2), sticky="w")
+        ).grid(row=16, column=0, padx=10, pady=(15, 2), sticky="w")
 
         system_options_frame = ctk.CTkFrame(self.scroll_settings)
-        system_options_frame.grid(row=15, column=0, padx=10, pady=5, sticky="ew")
+        system_options_frame.grid(row=17, column=0, padx=10, pady=5, sticky="ew")
         system_options_frame.grid_columnconfigure(0, weight=1)
 
         ctk.CTkCheckBox(
@@ -414,14 +586,26 @@ class App(ctk.CTk):
             variable=self.force_pipeline_var,
         ).grid(row=3, column=0, padx=10, pady=(0, 7), sticky="w")
 
+        ctk.CTkCheckBox(
+            system_options_frame, text="Debug-/Diagnoseberichte speichern",
+            variable=self.debug_artifacts_enabled_var,
+        ).grid(row=4, column=0, padx=10, pady=(0, 7), sticky="w")
+
+        ctk.CTkButton(
+            system_options_frame,
+            text="Systemcheck ausführen",
+            command=self._run_system_check_dialog,
+            width=190,
+        ).grid(row=5, column=0, padx=10, pady=(4, 10), sticky="w")
+
         # â”€â”€ API & Provider Einstellungen â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         ctk.CTkLabel(
             self.scroll_settings, text="API & Provider Einstellungen:",
             font=ctk.CTkFont(size=13, weight="bold")
-        ).grid(row=16, column=0, padx=10, pady=(15, 2), sticky="w")
+        ).grid(row=18, column=0, padx=10, pady=(15, 2), sticky="w")
 
         api_frame = ctk.CTkFrame(self.scroll_settings)
-        api_frame.grid(row=17, column=0, padx=10, pady=5, sticky="ew")
+        api_frame.grid(row=19, column=0, padx=10, pady=5, sticky="ew")
         api_frame.grid_columnconfigure(0, weight=1)
         
         ctk.CTkButton(
@@ -433,7 +617,7 @@ class App(ctk.CTk):
         ctk.CTkButton(
             self.scroll_settings, text="Einstellungen speichern",
             command=self._save_settings_clicked,
-        ).grid(row=18, column=0, padx=10, pady=18)
+        ).grid(row=20, column=0, padx=10, pady=18)
 
         # Prompts befüllen
         defaults = self.settings_manager.default_prompts
@@ -507,7 +691,10 @@ class App(ctk.CTk):
         self.watcher = None
         self.after(120, self._load_models)
         self.after(150, self._reload_paths_list)
+        self.after(250, self._refresh_dashboard_periodically)
         self.after(350, self._show_onboarding_if_needed)
+        self.privacy_mode_var.trace_add("write", lambda *_: self._refresh_dashboard())
+        self.redact_cloud_inputs_var.trace_add("write", lambda *_: self._refresh_dashboard())
 
     # ------------------------------------------------------------------ #
     #  Settings laden / speichern                                          #
@@ -522,6 +709,8 @@ class App(ctk.CTk):
         self.think_analysis_var.set(s.get("think_analysis", False))
         self.organize_enabled_var.set(s.get("organize_enabled", True))
         self.gdrive_enabled_var.set(s.get("gdrive_enabled", False))
+        self.privacy_mode_var.set(s.get("privacy_mode", "standard"))
+        self.redact_cloud_inputs_var.set(s.get("redact_cloud_inputs", False))
         self.gdrive_credentials_path_var.set(s.get("gdrive_credentials_path", "credentials.json"))
         self.gdrive_token_path_var.set(s.get("gdrive_token_path", str(default_token_path())))
         self.save_docx_enabled_var.set(s.get("save_docx_enabled", True))
@@ -529,11 +718,20 @@ class App(ctk.CTk):
         self.gdrive_upload_pdf_var.set(s.get("gdrive_upload_pdf", True))
         self.gdrive_upload_docx_var.set(s.get("gdrive_upload_docx", False))
         self.gdrive_upload_json_var.set(s.get("gdrive_upload_json", False))
+        self.synology_enabled_var.set(s.get("synology_enabled", False))
+        self.synology_base_url_var.set(s.get("synology_base_url", ""))
+        self.synology_username_var.set(s.get("synology_username", ""))
+        self.synology_password_var.set(s.get("synology_password", ""))
+        self.synology_root_path_var.set(s.get("synology_root_path", ""))
+        self.synology_upload_pdf_var.set(s.get("synology_upload_pdf", True))
+        self.synology_upload_docx_var.set(s.get("synology_upload_docx", False))
+        self.synology_upload_json_var.set(s.get("synology_upload_json", False))
         self.unload_models_enabled_var.set(s.get("unload_models_enabled", True))
         self.system_tray_enabled_var.set(s.get("system_tray_enabled", True))
         self.review_before_save_var.set(s.get("review_before_save", False))
         self.large_pdf_reduced_var.set(s.get("large_pdf_reduced", True))
         self.force_pipeline_var.set(s.get("force_pipeline", False))
+        self.debug_artifacts_enabled_var.set(s.get("debug_artifacts_enabled", True))
         self.onboarding_completed = s.get("onboarding_completed", False)
         self.prompt_version = s.get("prompt_version", 1)
         self.saved_models = s.get("models", {})
@@ -556,16 +754,115 @@ class App(ctk.CTk):
         if hasattr(self, 'gdrive_link_btn'):
             self.gdrive_link_btn.configure(text="Google Drive verknüpfen")
 
+    def _test_synology_connection(self):
+        try:
+            from core.cloud.synology_client import SynologyWebDAVClient
+
+            client = SynologyWebDAVClient(
+                base_url=self.synology_base_url_var.get(),
+                username=self.synology_username_var.get(),
+                password=self.synology_password_var.get(),
+                root_path=self.synology_root_path_var.get(),
+            )
+            if client.test_connection():
+                messagebox.showinfo("Synology/WebDAV", "Verbindung erfolgreich.")
+            else:
+                messagebox.showwarning("Synology/WebDAV", "Verbindung fehlgeschlagen oder unvollständig konfiguriert.")
+        except Exception as exc:
+            messagebox.showerror("Synology/WebDAV", f"Verbindungstest fehlgeschlagen:\n{exc}")
+
+    def _open_folder(self, path):
+        import os
+        from pathlib import Path
+
+        try:
+            folder = Path(path)
+            folder.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(folder))
+        except Exception as exc:
+            messagebox.showerror("Fehler", f"Ordner konnte nicht geöffnet werden:\n{exc}")
+
+    def _open_consume_folder(self):
+        base_dir = self.dir_path_var.get()
+        if not base_dir:
+            messagebox.showerror("Fehler", "Bitte wählen Sie zuerst einen Basis-Ordner aus.")
+            return
+        self._open_folder(AppConfig(base_dir).consume_dir)
+
+    def _open_final_folder(self):
+        base_dir = self.dir_path_var.get()
+        if not base_dir:
+            messagebox.showerror("Fehler", "Bitte wählen Sie zuerst einen Basis-Ordner aus.")
+            return
+        self._open_folder(AppConfig(base_dir).final_dir)
+
+    def _refresh_dashboard(self):
+        base_dir = self.dir_path_var.get()
+        if not base_dir:
+            self.status_watcher_var.set("Bereit")
+            self.status_privacy_var.set(self.privacy_mode_var.get() or "standard")
+            self.status_consume_var.set("-")
+            self.status_review_var.set("-")
+            self.status_paths_var.set("-")
+            return
+
+        try:
+            config = AppConfig(base_dir)
+            if config.consume_dir.exists():
+                consume_count = sum(1 for item in config.consume_dir.iterdir() if item.is_file())
+            else:
+                consume_count = 0
+            self.status_consume_var.set(f"{consume_count} Dateien")
+        except Exception:
+            self.status_consume_var.set("-")
+
+        if self.watcher and self.watcher.is_running:
+            self.status_watcher_var.set("Aktiv")
+        else:
+            self.status_watcher_var.set("Bereit")
+
+        privacy = self.privacy_mode_var.get() or "standard"
+        if self.redact_cloud_inputs_var.get() and privacy != "local_only":
+            privacy = f"{privacy} + Maskierung"
+        self.status_privacy_var.set(privacy)
+
+        try:
+            from core.cloud.folder_registry import FolderRegistry
+
+            registry = FolderRegistry(base_dir)
+            self.status_paths_var.set(f"{len(registry.get_known_paths())} Pfade")
+        except Exception:
+            self.status_paths_var.set("-")
+
+        try:
+            from core.local_store import LocalStore
+            from pathlib import Path
+
+            if not (Path(base_dir) / "unified_ocr.sqlite3").exists():
+                self.status_review_var.set("0 offen")
+                return
+            store = LocalStore(base_dir)
+            pending_count = len(store.list_review_items("pending", limit=200))
+            self.status_review_var.set(f"{pending_count} offen")
+        except Exception:
+            self.status_review_var.set("-")
+
+    def _refresh_dashboard_periodically(self):
+        self._refresh_dashboard()
+        self.after(5000, self._refresh_dashboard_periodically)
+
     def _browse_dir(self):
         path = filedialog.askdirectory(initialdir=self.dir_path_var.get())
         if path:
             self.dir_path_var.set(path)
             self._save_settings(show_message=False)
             self._reload_paths_list()
+            self._refresh_dashboard()
 
     def _save_settings_clicked(self):
         self._save_settings(show_message=True)
         self._reload_paths_list()
+        self._refresh_dashboard()
 
     def _save_settings(self, show_message: bool = False):
         settings = {
@@ -576,6 +873,8 @@ class App(ctk.CTk):
             "think_analysis": self.think_analysis_var.get(),
             "organize_enabled": self.organize_enabled_var.get(),
             "gdrive_enabled": self.gdrive_enabled_var.get(),
+            "privacy_mode": self.privacy_mode_var.get(),
+            "redact_cloud_inputs": self.redact_cloud_inputs_var.get(),
             "gdrive_credentials_path": self.gdrive_credentials_path_var.get(),
             "gdrive_token_path": self.gdrive_token_path_var.get(),
             "save_docx_enabled": self.save_docx_enabled_var.get(),
@@ -583,11 +882,20 @@ class App(ctk.CTk):
             "gdrive_upload_pdf": self.gdrive_upload_pdf_var.get(),
             "gdrive_upload_docx": self.gdrive_upload_docx_var.get(),
             "gdrive_upload_json": self.gdrive_upload_json_var.get(),
+            "synology_enabled": self.synology_enabled_var.get(),
+            "synology_base_url": self.synology_base_url_var.get(),
+            "synology_username": self.synology_username_var.get(),
+            "synology_password": self.synology_password_var.get(),
+            "synology_root_path": self.synology_root_path_var.get(),
+            "synology_upload_pdf": self.synology_upload_pdf_var.get(),
+            "synology_upload_docx": self.synology_upload_docx_var.get(),
+            "synology_upload_json": self.synology_upload_json_var.get(),
             "unload_models_enabled": self.unload_models_enabled_var.get(),
             "system_tray_enabled": self.system_tray_enabled_var.get(),
             "review_before_save": self.review_before_save_var.get(),
             "large_pdf_reduced": self.large_pdf_reduced_var.get(),
             "force_pipeline": self.force_pipeline_var.get(),
+            "debug_artifacts_enabled": self.debug_artifacts_enabled_var.get(),
             "onboarding_completed": self.onboarding_completed,
             "prompt_version": self.prompt_version,
             "models": {
@@ -621,8 +929,36 @@ class App(ctk.CTk):
 
             if show_message:
                 messagebox.showinfo("Gespeichert", "Einstellungen wurden gespeichert.")
+            self._refresh_dashboard()
         except Exception as e:
             messagebox.showerror("Fehler", f"Konnte Einstellungen nicht speichern:\n{e}")
+
+    def _run_system_check_dialog(self):
+        from core.system_check import format_system_check, run_system_check
+
+        checks = run_system_check(
+            self.dir_path_var.get(),
+            credentials_path=self.gdrive_credentials_path_var.get(),
+            token_path=self.gdrive_token_path_var.get(),
+        )
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Systemcheck")
+        dialog.geometry("720x520")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            dialog,
+            text="Systemcheck",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).grid(row=0, column=0, padx=18, pady=(16, 8), sticky="w")
+        output = ctk.CTkTextbox(dialog)
+        output.grid(row=1, column=0, padx=18, pady=8, sticky="nsew")
+        output.insert("1.0", format_system_check(checks))
+        output.configure(state="disabled")
+        ctk.CTkButton(dialog, text="Schließen", command=dialog.destroy).grid(row=2, column=0, padx=18, pady=(8, 16), sticky="e")
 
     # ------------------------------------------------------------------ #
     #  LLMClient aufbauen                                                  #
@@ -652,6 +988,7 @@ class App(ctk.CTk):
             keep_alive     = keep_alive,
             prompt_version = self.prompt_version,
             force_pipeline = self.force_pipeline_var.get(),
+            redact_cloud_inputs = self.redact_cloud_inputs_var.get(),
         )
         client.stream_callback = self._after_stream
         return client
@@ -829,6 +1166,7 @@ class App(ctk.CTk):
             progress_callback = self._after_progress,
             organize_enabled  = self.organize_enabled_var.get(),
             prompt_new_folder_callback = self.prompt_new_folder,
+            prompt_sorting_callback = self.prompt_sorting_choice,
             gdrive_enabled    = self.gdrive_enabled_var.get(),
             gdrive_token_path = self.gdrive_token_path_var.get(),
             save_docx_enabled = self.save_docx_enabled_var.get(),
@@ -836,10 +1174,20 @@ class App(ctk.CTk):
             gdrive_upload_pdf = self.gdrive_upload_pdf_var.get(),
             gdrive_upload_docx = self.gdrive_upload_docx_var.get(),
             gdrive_upload_json = self.gdrive_upload_json_var.get(),
+            synology_enabled = self.synology_enabled_var.get(),
+            synology_base_url = self.synology_base_url_var.get(),
+            synology_username = self.synology_username_var.get(),
+            synology_password = self.synology_password_var.get(),
+            synology_root_path = self.synology_root_path_var.get(),
+            synology_upload_pdf = self.synology_upload_pdf_var.get(),
+            synology_upload_docx = self.synology_upload_docx_var.get(),
+            synology_upload_json = self.synology_upload_json_var.get(),
             review_before_save = self.review_before_save_var.get(),
             prompt_review_callback = self._prompt_review_callback,
             on_processing_start_callback = self._on_processing_start_callback,
             large_pdf_reduced  = self.large_pdf_reduced_var.get(),
+            privacy_mode       = self.privacy_mode_var.get(),
+            debug_artifacts_enabled = self.debug_artifacts_enabled_var.get(),
         )
         self.watcher = DirectoryWatcher(orchestrator)
         self._save_settings(show_message=False)
@@ -850,6 +1198,7 @@ class App(ctk.CTk):
         )
         self.dir_entry.configure(state="disabled")
         self.browse_btn.configure(state="disabled")
+        self._refresh_dashboard()
 
     def _stop_watchdog(self):
         self.watcher.stop()
@@ -859,6 +1208,7 @@ class App(ctk.CTk):
         )
         self.dir_entry.configure(state="normal")
         self.browse_btn.configure(state="normal")
+        self._refresh_dashboard()
 
     # ------------------------------------------------------------------ #
     #  Logging                                                             #
@@ -875,7 +1225,18 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------ #
 
     def _after_progress(self, value: float):
-        self.after(0, self.progress_var.set, value)
+        self.after(0, self._set_progress, value)
+
+    def _set_progress(self, value: float):
+        normalized = max(0.0, min(float(value), 1.0))
+        self.progress_var.set(normalized)
+        self.progress_text_var.set(f"{int(normalized * 100)} %")
+        if 0.0 < normalized < 1.0:
+            self.status_watcher_var.set("Verarbeitet")
+        elif self.watcher and self.watcher.is_running:
+            self.status_watcher_var.set("Aktiv")
+        else:
+            self.status_watcher_var.set("Bereit")
 
     def _after_log(self, message: str):
         self.after(0, self._log, message)
@@ -915,6 +1276,7 @@ class App(ctk.CTk):
         else:
             self.paths_box.insert("end", "Bitte wählen Sie zuerst einen Basis-Ordner aus.")
         self.paths_box.configure(state="disabled")
+        self._refresh_dashboard()
 
     def _show_onboarding_if_needed(self):
         if self.onboarding_completed or not self.organize_enabled_var.get():
@@ -964,6 +1326,89 @@ class App(ctk.CTk):
         except Exception as e:
             messagebox.showerror("Fehler", f"Konnte Pfad-Manager nicht öffnen: {e}")
 
+    def _open_document_library(self):
+        from core.local_store import LocalStore
+
+        try:
+            store = LocalStore(self.dir_path_var.get())
+        except Exception as exc:
+            messagebox.showerror("Fehler", f"Dokumentenbibliothek konnte nicht geöffnet werden:\n{exc}")
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Dokumentenbibliothek")
+        dialog.geometry("900x620")
+        dialog.minsize(760, 500)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(2, weight=1)
+
+        ctk.CTkLabel(
+            dialog,
+            text="Dokumentenbibliothek",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).grid(row=0, column=0, padx=18, pady=(16, 8), sticky="w")
+
+        search_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        search_frame.grid(row=1, column=0, padx=18, pady=4, sticky="ew")
+        search_frame.grid_columnconfigure(0, weight=1)
+        query_var = ctk.StringVar(value="")
+        query_entry = ctk.CTkEntry(search_frame, textvariable=query_var, placeholder_text="Suchen nach Dateiname, Zielpfad, Typ oder Tags...")
+        query_entry.grid(row=0, column=0, padx=(0, 8), sticky="ew")
+
+        result_box = ctk.CTkTextbox(dialog)
+        result_box.grid(row=2, column=0, padx=18, pady=8, sticky="nsew")
+
+        def refresh():
+            result_box.configure(state="normal")
+            result_box.delete("1.0", "end")
+            rows = store.search_documents(query_var.get().strip(), limit=200)
+            if not rows:
+                result_box.insert("end", "Keine Einträge gefunden.\n")
+            for row in rows:
+                result_box.insert("end", f"{row.get('final_name') or row.get('source_name')}\n")
+                result_box.insert("end", f"  Ziel: {row.get('target_path') or '-'}\n")
+                result_box.insert("end", f"  Quelle: {row.get('source_name') or '-'}\n")
+                result_box.insert("end", f"  Aktualisiert: {row.get('updated_at') or '-'}\n\n")
+            result_box.configure(state="disabled")
+
+        ctk.CTkButton(search_frame, text="Suchen", width=90, command=refresh).grid(row=0, column=1, padx=4)
+        ctk.CTkButton(search_frame, text="Schließen", width=90, command=dialog.destroy).grid(row=0, column=2, padx=(4, 0))
+        query_entry.bind("<Return>", lambda _event: refresh())
+        refresh()
+
+    def _open_review_queue(self):
+        from core.local_store import LocalStore
+
+        try:
+            store = LocalStore(self.dir_path_var.get())
+            items = store.list_review_items("pending", limit=200)
+        except Exception as exc:
+            messagebox.showerror("Fehler", f"Review-Queue konnte nicht geöffnet werden:\n{exc}")
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Review-Queue")
+        dialog.geometry("820x560")
+        dialog.minsize(700, 460)
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(1, weight=1)
+
+        ctk.CTkLabel(dialog, text="Offene Review-Queue", font=ctk.CTkFont(size=18, weight="bold")).grid(row=0, column=0, padx=18, pady=(16, 8), sticky="w")
+        box = ctk.CTkTextbox(dialog)
+        box.grid(row=1, column=0, padx=18, pady=8, sticky="nsew")
+        if not items:
+            box.insert("end", "Keine offenen Review-Einträge.\n")
+        for item in items:
+            box.insert("end", f"#{item.get('id')} [{item.get('kind')}] {item.get('source_name') or '-'}\n")
+            box.insert("end", f"  Vorschlag: {item.get('proposed_path') or '-'}\n")
+            box.insert("end", f"  Erstellt: {item.get('created_at') or '-'}\n\n")
+        box.configure(state="disabled")
+        ctk.CTkButton(dialog, text="Schließen", command=dialog.destroy).grid(row=2, column=0, padx=18, pady=(8, 16), sticky="e")
+
     def prompt_new_folder(self, proposed_path: str) -> str:
         """
         Wird vom Hintergrund-Thread aufgerufen.
@@ -1005,7 +1450,7 @@ class App(ctk.CTk):
         msg = (
             f"Das LLM schlägt vor, das Dokument in einen neuen Ordner\n"
             f"einzusortieren:\n\n"
-            f"Â»  {proposed_path}  Â«\n\n"
+            f"»  {proposed_path}  «\n\n"
             f"Wie soll verfahren werden?"
         )
         ctk.CTkLabel(dialog, text=msg, justify="center").pack(padx=20, pady=10)
@@ -1064,6 +1509,90 @@ class App(ctk.CTk):
             command=lambda: select_option(path_var.get())
         )
         btn_select.pack(side="left", padx=5)
+
+    def prompt_sorting_choice(self, classification_result: dict, known_paths: list, proposed_path: str) -> str | None:
+        result_container = []
+        event = threading.Event()
+        self.after(0, self._show_sorting_choice_dialog, classification_result, known_paths, proposed_path, result_container, event)
+        event.wait()
+        return result_container[0] if result_container else None
+
+    def _show_sorting_choice_dialog(self, classification_result: dict, known_paths: list, proposed_path: str, result_container: list, event: threading.Event):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Zielordner bestätigen")
+        dialog.geometry("720x560")
+        dialog.minsize(620, 460)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(2, weight=1)
+
+        ctk.CTkLabel(
+            dialog,
+            text="Zielordner bestätigen",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).grid(row=0, column=0, padx=20, pady=(18, 4), sticky="w")
+
+        confidence = classification_result.get("confidence", classification_result.get("score", 0))
+        reason = classification_result.get("reason", "unsicher")
+        ctk.CTkLabel(
+            dialog,
+            text=f"Die automatische Einordnung ist nicht eindeutig genug. Vorschlag: {proposed_path} ({confidence} %, {reason})",
+            text_color="gray",
+            wraplength=660,
+        ).grid(row=1, column=0, padx=20, pady=(0, 10), sticky="ew")
+
+        scroll = ctk.CTkScrollableFrame(dialog)
+        scroll.grid(row=2, column=0, padx=20, pady=8, sticky="nsew")
+        scroll.grid_columnconfigure(0, weight=1)
+
+        def select(path: str):
+            result_container.append(path)
+            dialog.destroy()
+            event.set()
+
+        candidates = classification_result.get("candidates") or []
+        shown_paths = set()
+        row = 0
+        for candidate in candidates[:5]:
+            path = candidate.get("path") or candidate.get("recommended_path")
+            if not path or path in shown_paths:
+                continue
+            shown_paths.add(path)
+            frame = ctk.CTkFrame(scroll)
+            frame.grid(row=row, column=0, padx=8, pady=6, sticky="ew")
+            frame.grid_columnconfigure(0, weight=1)
+            title = f"{path}   ({candidate.get('score', 0)} %)"
+            ctk.CTkLabel(frame, text=title, font=ctk.CTkFont(weight="bold")).grid(row=0, column=0, padx=10, pady=(8, 2), sticky="w")
+            evidence = candidate.get("evidence") or []
+            if evidence:
+                ctk.CTkLabel(
+                    frame,
+                    text="Hinweise: " + ", ".join(str(item) for item in evidence[:5]),
+                    text_color="gray",
+                    wraplength=520,
+                ).grid(row=1, column=0, padx=10, pady=(0, 8), sticky="w")
+            ctk.CTkButton(frame, text="Diesen Pfad wählen", width=140, command=lambda p=path: select(p)).grid(row=0, column=1, rowspan=2, padx=10, pady=8)
+            row += 1
+
+        manual_frame = ctk.CTkFrame(dialog)
+        manual_frame.grid(row=3, column=0, padx=20, pady=(8, 16), sticky="ew")
+        manual_frame.grid_columnconfigure(1, weight=1)
+
+        paths = list(dict.fromkeys([p for p in known_paths if p] + [proposed_path, "Sonstiges"]))
+        ctk.CTkLabel(manual_frame, text="Anderer Pfad:").grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        path_var = ctk.StringVar(value=proposed_path if proposed_path else (paths[0] if paths else "Sonstiges"))
+        path_box = ctk.CTkComboBox(manual_frame, variable=path_var, values=paths)
+        path_box.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
+        ctk.CTkButton(manual_frame, text="Übernehmen", width=120, command=lambda: select(path_var.get())).grid(row=0, column=2, padx=10, pady=10)
+
+        def on_close():
+            result_container.append(proposed_path or "Sonstiges")
+            dialog.destroy()
+            event.set()
+
+        dialog.protocol("WM_DELETE_WINDOW", on_close)
 
     # ------------------------------------------------------------------ #
     #  Manuelle Prüfung & PDF-Vorschau Callbacks                        #

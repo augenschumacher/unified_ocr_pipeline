@@ -74,6 +74,8 @@ class SettingsManager:
             "think_analysis": False,
             "organize_enabled": True,
             "gdrive_enabled": False,
+            "privacy_mode": "standard",
+            "redact_cloud_inputs": False,
             "gdrive_credentials_path": normalize_credentials_path(None),
             "gdrive_token_path": normalize_token_path(None),
             "save_docx_enabled": True,
@@ -81,12 +83,21 @@ class SettingsManager:
             "gdrive_upload_pdf": True,
             "gdrive_upload_docx": False,
             "gdrive_upload_json": False,
+            "synology_enabled": False,
+            "synology_base_url": "",
+            "synology_username": "",
+            "synology_password": "",
+            "synology_root_path": "",
+            "synology_upload_pdf": True,
+            "synology_upload_docx": False,
+            "synology_upload_json": False,
             "unload_models_enabled": True,
             "system_tray_enabled": True,
             "review_before_save": False,
             "large_pdf_reduced": True,
             "onboarding_completed": False,
             "force_pipeline": False,
+            "debug_artifacts_enabled": True,
             "prompt_version": self.CURRENT_PROMPT_VERSION,
             "prompts": self.default_prompts.copy(),
         }
@@ -173,6 +184,11 @@ class SettingsManager:
         if docx_mode not in valid_docx_modes:
             raise ValueError(f"Ungültiger DOCX-Modus: {docx_mode}. Erlaubt sind: {valid_docx_modes}")
 
+        privacy_mode = settings.get("privacy_mode", "standard")
+        valid_privacy_modes = ["standard", "local_only"]
+        if privacy_mode not in valid_privacy_modes:
+            raise ValueError(f"Ungültiger Datenschutzmodus: {privacy_mode}. Erlaubt sind: {valid_privacy_modes}")
+
         models = settings.get("models", {})
         for key in ["vision", "fusion", "analysis", "glm_ocr"]:
             if key not in models:
@@ -188,14 +204,20 @@ class SettingsManager:
             ("gdrive_upload_pdf", True),
             ("gdrive_upload_docx", False),
             ("gdrive_upload_json", False),
+            ("synology_enabled", False),
+            ("synology_upload_pdf", True),
+            ("synology_upload_docx", False),
+            ("synology_upload_json", False),
             ("unload_models_enabled", True),
             ("system_tray_enabled", True),
             ("review_before_save", False),
+            ("redact_cloud_inputs", False),
             ("large_pdf_reduced", True),
             ("onboarding_completed", False),
             ("think_fusion", False),
             ("think_analysis", False),
             ("force_pipeline", False),
+            ("debug_artifacts_enabled", True),
         ]
         for key, default in bool_fields:
             value = settings.get(key)
@@ -208,6 +230,13 @@ class SettingsManager:
             value = settings.get(key)
             if not value:
                 settings[key] = normalize_credentials_path(None) if key == "gdrive_credentials_path" else normalize_token_path(None)
+            elif not isinstance(value, str):
+                raise ValueError(f"{key} muss ein String sein.")
+
+        for key in ["synology_base_url", "synology_username", "synology_password", "synology_root_path"]:
+            value = settings.get(key, "")
+            if value is None:
+                settings[key] = ""
             elif not isinstance(value, str):
                 raise ValueError(f"{key} muss ein String sein.")
 

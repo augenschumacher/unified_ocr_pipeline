@@ -8,7 +8,8 @@ logger = logging.getLogger("UnifiedOCR")
 DEFAULT_REGISTRY = {
     "persons": [],
     "known_paths": [],
-    "drive_folders": {}
+    "drive_folders": {},
+    "path_contexts": {},
 }
 
 class FolderRegistry:
@@ -31,6 +32,7 @@ class FolderRegistry:
                 data.setdefault("persons", DEFAULT_REGISTRY["persons"])
                 data.setdefault("known_paths", DEFAULT_REGISTRY["known_paths"])
                 data.setdefault("drive_folders", DEFAULT_REGISTRY["drive_folders"])
+                data.setdefault("path_contexts", DEFAULT_REGISTRY["path_contexts"])
                 return data
             except Exception as e:
                 logger.error(f"Fehler beim Laden der folder_registry.json: {e}. Nutze Standardwerte.")
@@ -74,6 +76,52 @@ class FolderRegistry:
         mapping = self.data.get("drive_folders", {})
         return mapping if isinstance(mapping, dict) else {}
 
+    def get_path_contexts(self) -> dict:
+        """Gibt gespeicherte Sortier-Kontexte pro Pfad zurueck."""
+        contexts = self.data.get("path_contexts", {})
+        return contexts if isinstance(contexts, dict) else {}
+
+    def get_path_context(self, path: str) -> dict:
+        normalized = path.strip().replace("\\", "/")
+        context = self.get_path_contexts().get(normalized, {})
+        return context if isinstance(context, dict) else {}
+
+    def set_path_context(self, path: str, context: dict):
+        normalized = path.strip().replace("\\", "/")
+        if not normalized:
+            return
+        contexts = dict(self.get_path_contexts())
+        cleaned = {
+            "object_type": str(context.get("object_type", "")).strip(),
+            "aliases": self._clean_context_list(context.get("aliases", [])),
+            "keywords": self._clean_context_list(context.get("keywords", [])),
+            "notes": str(context.get("notes", "")).strip(),
+        }
+        if any(cleaned.values()):
+            contexts[normalized] = cleaned
+        else:
+            contexts.pop(normalized, None)
+        self.data["path_contexts"] = contexts
+        self.save()
+
+    @staticmethod
+    def _clean_context_list(values) -> list[str]:
+        if isinstance(values, str):
+            raw = values.replace("\n", ",").split(",")
+        elif isinstance(values, list):
+            raw = values
+        else:
+            raw = []
+        cleaned = []
+        seen = set()
+        for value in raw:
+            item = " ".join(str(value).strip().split())
+            key = item.casefold()
+            if item and key not in seen:
+                cleaned.append(item)
+                seen.add(key)
+        return cleaned
+
     def get_drive_folder_id(self, path: str) -> str | None:
         normalized = path.strip().replace("\\", "/")
         return self.get_drive_folder_map().get(normalized)
@@ -90,6 +138,12 @@ class FolderRegistry:
         known = set(self.get_known_paths())
         self.data["drive_folders"] = {
             k: v for k, v in self.get_drive_folder_map().items() if k in known
+        }
+
+    def prune_path_contexts(self):
+        known = set(self.get_known_paths())
+        self.data["path_contexts"] = {
+            k: v for k, v in self.get_path_contexts().items() if k in known
         }
 
     def add_path(self, path: str) -> bool:
@@ -183,7 +237,9 @@ class FolderRegistry:
             
         known_paths = sorted(list(set(known_paths)))
         old_drive_map = self.get_drive_folder_map()
+        old_contexts = self.get_path_contexts()
         self.data["drive_folders"] = {k: v for k, v in old_drive_map.items() if k in known_paths}
+        self.data["path_contexts"] = {k: v for k, v in old_contexts.items() if k in known_paths}
         self.data["persons"] = persons
         self.data["known_paths"] = known_paths
         self.save()

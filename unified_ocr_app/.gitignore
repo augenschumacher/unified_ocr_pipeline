@@ -19,6 +19,8 @@ settings.json
 llm_config.yaml
 folder_registry.json
 folder_registry.backup.json
+classification_memory.json
+unified_ocr.sqlite3
 google_drive_token.json
 token.json
 credentials.json

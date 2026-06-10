@@ -37,6 +37,7 @@ class TestSettingsManager(unittest.TestCase):
             self.assertTrue(settings["unload_models_enabled"])
             self.assertTrue(settings["system_tray_enabled"])
             self.assertFalse(settings["review_before_save"])
+            self.assertEqual(settings["privacy_mode"], "standard")
 
     def test_validation_bad_format(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -76,6 +77,18 @@ class TestSettingsManager(unittest.TestCase):
             self.assertFalse(s2["unload_models_enabled"])
             self.assertFalse(s2["system_tray_enabled"])
             self.assertTrue(s2["review_before_save"])
+
+    def test_privacy_mode_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = SettingsManager(Path(tmpdir) / "settings.json")
+            settings = mgr.load()
+            settings["privacy_mode"] = "local_only"
+            mgr.save(settings)
+            self.assertEqual(SettingsManager(Path(tmpdir) / "settings.json").load()["privacy_mode"], "local_only")
+
+            settings["privacy_mode"] = "cloud_first"
+            with self.assertRaises(ValueError):
+                mgr.save(settings)
 
 
 class TestQualityChecker(unittest.TestCase):
@@ -322,6 +335,7 @@ class TestFolderRegistry(unittest.TestCase):
             reg = FolderRegistry(Path(tmpdir))
             self.assertEqual([], reg.get_known_paths())
             self.assertEqual([], reg.get_persons())
+            self.assertEqual({}, reg.get_path_contexts())
             self.assertTrue(reg.registry_file.exists())
 
     def test_add_path(self):
@@ -370,6 +384,26 @@ class TestFolderRegistry(unittest.TestCase):
             self.assertEqual(loaded_tree["Jan"]["Auto"], {})
             self.assertEqual(loaded_tree["Jan"]["Arbeit"]["Projekte"], {})
             self.assertEqual(loaded_tree["Laura"], {})
+
+    def test_path_context_roundtrip_and_prune(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            reg = FolderRegistry(Path(tmpdir))
+            reg.save_tree({"Jan": {"Auto": {"Golf": {}}, "Hobby": {}}})
+            reg.set_path_context("Jan/Auto/Golf", {
+                "object_type": "vehicle",
+                "aliases": "Golf 7, VW Golf",
+                "keywords": ["AB CD 123", "Inspektion", "Inspektion"],
+                "notes": "Dienstwagen.",
+            })
+
+            reloaded = FolderRegistry(Path(tmpdir))
+            context = reloaded.get_path_context("Jan/Auto/Golf")
+            self.assertEqual(context["object_type"], "vehicle")
+            self.assertEqual(context["aliases"], ["Golf 7", "VW Golf"])
+            self.assertEqual(context["keywords"], ["AB CD 123", "Inspektion"])
+
+            reloaded.save_tree({"Jan": {"Hobby": {}}})
+            self.assertEqual({}, reloaded.get_path_contexts())
 
 
 class TestDocumentOrganizer(unittest.TestCase):
@@ -570,10 +604,11 @@ class TestPipelineExport(unittest.TestCase):
             # Google Drive upload should be called with docx and json
             orch._stage_gdrive_upload.assert_called_once()
             
-            # And then they should be deleted, and begleitdateien folder should be deleted too!
+            # Generated companion files should be deleted after upload. The
+            # begleitdateien folder remains because it now contains the job manifest.
             self.assertFalse(docx_file.exists())
             self.assertFalse(json_file.exists())
-            self.assertFalse(begleit_dir.exists())
+            self.assertTrue((begleit_dir / "doc_job_manifest.json").exists())
 
 
 class TestPipelineCallbacksAndReview(unittest.TestCase):
@@ -786,7 +821,7 @@ class TestClassifierRules(unittest.TestCase):
         res = classify_document("text", {}, known, MockLLM("Sonstiges"), ["Jan", "Sonstiges"])
         self.assertEqual(res["recommended_path"], "Sonstiges")
 
-    def test_deep_path_truncation(self):
+    def test_deep_path_allows_object_depth_and_guards_extreme_depth(self):
         class MockLLM:
             def __init__(self, path):
                 self.analysis_model = "mock-model"
@@ -797,7 +832,10 @@ class TestClassifierRules(unittest.TestCase):
                 
         known = ["Sonstiges"]
         res = classify_document("text", {}, known, MockLLM("Jan/Gesundheit/Zahnarzt/Termine"), ["Jan", "Sonstiges"])
-        self.assertEqual(res["recommended_path"], "Jan/Gesundheit")
+        self.assertEqual(res["recommended_path"], "Jan/Gesundheit/Zahnarzt/Termine")
+
+        res = classify_document("text", {}, known, MockLLM("Jan/A/B/C/D/E"), ["Jan", "Sonstiges"])
+        self.assertEqual(res["recommended_path"], "Jan/A/B/C")
 
     def test_unrecognized_person_fallback(self):
         class MockLLM:
@@ -826,6 +864,34 @@ class TestClassifierRules(unittest.TestCase):
         # Case insensitive match to "Jan/Gesundheit"
         res = classify_document("text", {}, known, MockLLM("jan/gesundheit"), ["Jan", "Laura", "Sonstiges"])
         self.assertEqual(res["recommended_path"], "Jan/Gesundheit")
+        self.assertFalse(res["is_new"])
+
+    def test_context_match_prefers_specific_vehicle_path_without_llm(self):
+        class MockLLM:
+            analysis_model = "mock-model"
+            fusion_model = None
+            def query(self, *args, **kwargs):
+                raise AssertionError("Context match should avoid LLM query")
+
+        known = ["Fabio/Auto/Golf", "Fabio/Auto/Tesla"]
+        contexts = {
+            "Fabio/Auto/Golf": {
+                "object_type": "vehicle",
+                "aliases": ["Golf 7"],
+                "keywords": ["AB CD 123", "Inspektion"],
+            },
+            "Fabio/Auto/Tesla": {
+                "object_type": "vehicle",
+                "aliases": ["Model 3"],
+                "keywords": ["EF GH 456"],
+            },
+        }
+
+        text = "Rechnung fuer Inspektion am VW Golf 7, Kennzeichen AB CD 123."
+        res = classify_document(text, {"document_type": "Service"}, known, MockLLM(), ["Fabio"], contexts)
+
+        self.assertEqual(res["recommended_path"], "Fabio/Auto/Golf")
+        self.assertEqual(res["reason"], "context_match")
         self.assertFalse(res["is_new"])
 
 
