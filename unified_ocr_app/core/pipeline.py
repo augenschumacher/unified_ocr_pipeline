@@ -539,7 +539,12 @@ class PipelineOrchestrator:
     # ------------------------------------------------------------------ #
 
     def _stage_organize(
-        self, fused_text: str, metadata: dict, final_name: str, is_docx: bool = False
+        self,
+        fused_text: str,
+        metadata: dict,
+        final_name: str,
+        is_docx: bool = False,
+        preview_pdf_path: Path | None = None,
     ) -> tuple[list, str]:
         from core.cloud.folder_registry import FolderRegistry
         from core.cloud.classification_memory import ClassificationMemory
@@ -589,7 +594,15 @@ class PipelineOrchestrator:
                         candidates=classification_result.get("candidates", []),
                         metadata=metadata,
                     )
-                    chosen_path = self.prompt_sorting_callback(classification_result, known_paths, target_path)
+                    try:
+                        chosen_path = self.prompt_sorting_callback(
+                            classification_result,
+                            known_paths,
+                            target_path,
+                            preview_pdf_path,
+                        )
+                    except TypeError:
+                        chosen_path = self.prompt_sorting_callback(classification_result, known_paths, target_path)
                     if chosen_path:
                         target_path = chosen_path.strip().replace("\\", "/")
                         learning_source = "sorting_prompt"
@@ -1147,6 +1160,11 @@ class PipelineOrchestrator:
         target_path = ""
         manifest = None
         diagnostics = None
+        source_input_dir = self.config.source_consume_dir_for(file_path) if hasattr(self.config, "source_consume_dir_for") else None
+        if source_input_dir:
+            source_input_profile = "consume" if source_input_dir == self.config.consume_dir else source_input_dir.name
+        else:
+            source_input_profile = "manual"
         source_sha256 = sha256_file(file_path)
         local_store = LocalStore(self.config)
         duplicate_matches = local_store.find_duplicates(source_sha256)
@@ -1191,6 +1209,7 @@ class PipelineOrchestrator:
         work_dir = self.config.work_dir / f"work_{uuid.uuid4().hex}"
         work_dir.mkdir(parents=True, exist_ok=True)
         manifest = JobManifest.create(job_id=job_id, source_path=original_path, manifest_dir=work_dir)
+        manifest.record_source_context(input_dir=source_input_dir, input_profile=source_input_profile)
         diagnostics = DiagnosticsRecorder(
             job_id=job_id,
             source_path=original_path,
@@ -1214,6 +1233,9 @@ class PipelineOrchestrator:
             save_docx_enabled=self.save_docx_enabled,
             save_json_enabled=self.save_json_enabled,
             large_pdf_reduced=self.large_pdf_reduced,
+            source_input_dir=source_input_dir,
+            source_input_profile=source_input_profile,
+            configured_input_dirs=getattr(self.config, "consume_dirs", [self.config.consume_dir]),
             models={
                 "glm_ocr": getattr(self.llm, "glm_ocr_model", ""),
                 "vision": getattr(self.llm, "vision_model", ""),
@@ -1221,7 +1243,13 @@ class PipelineOrchestrator:
                 "analysis": getattr(self.llm, "analysis_model", ""),
             },
         )
-        diagnostics.event("job_started", filename=filename, source_sha256=source_sha256)
+        diagnostics.event(
+            "job_started",
+            filename=filename,
+            source_sha256=source_sha256,
+            source_input_dir=source_input_dir,
+            source_input_profile=source_input_profile,
+        )
         manifest.record_stage("original_archive", "ok", artifacts={"original_path": original_path})
         if duplicate_matches:
             diagnostics.warn("Mögliches Duplikat erkannt.", matches=duplicate_matches)
@@ -1520,7 +1548,14 @@ class PipelineOrchestrator:
             if self.organize_enabled:
                 self.report_progress(0.96)
                 stage_start = time.perf_counter()
-                moved_files, target_path = self._stage_organize(fused_text, metadata, final_name, is_docx=is_docx)
+                sorting_preview_path = self._resolve_exported_path(exported_paths, "pdf") or source_pdf_for_export
+                moved_files, target_path = self._stage_organize(
+                    fused_text,
+                    metadata,
+                    final_name,
+                    is_docx=is_docx,
+                    preview_pdf_path=sorting_preview_path,
+                )
                 manifest.record_stage("organize", "deferred" if moved_files and "_staging" in str(moved_files[0]) else "ok", artifacts={"moved_files": moved_files}, provenance={"target_path": target_path})
                 diagnostics.stage(
                     "organize",

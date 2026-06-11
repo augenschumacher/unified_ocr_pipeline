@@ -57,7 +57,7 @@ def setup_logging(base_dir: Path) -> logging.Logger:
     return logger
 
 class AppConfig:
-    def __init__(self, base_dir: str):
+    def __init__(self, base_dir: str, additional_consume_dirs=None):
         self.base_dir = Path(base_dir)
         self.consume_dir = self.base_dir / "consume"
         self.original_dir = self.base_dir / "original"
@@ -66,9 +66,59 @@ class AppConfig:
         self.log_dir = self.base_dir / "logs"
         self.work_dir = self.base_dir / "work"
         self.large_pdf_page_limit = 20
+        self.additional_consume_dirs = []
+        self.set_additional_consume_dirs(additional_consume_dirs or [])
+
+    def _path_key(self, path: Path) -> str:
+        try:
+            return str(path.resolve(strict=False)).lower()
+        except Exception:
+            return str(path.absolute()).lower()
+
+    @property
+    def consume_dirs(self) -> list[Path]:
+        dirs = [self.consume_dir]
+        seen = {self._path_key(self.consume_dir)}
+        for directory in self.additional_consume_dirs:
+            key = self._path_key(directory)
+            if key not in seen:
+                dirs.append(directory)
+                seen.add(key)
+        return dirs
+
+    def set_additional_consume_dirs(self, directories):
+        primary_key = self._path_key(self.consume_dir)
+        cleaned = []
+        seen = {primary_key}
+        for raw in directories or []:
+            if not raw:
+                continue
+            path = Path(str(raw)).expanduser()
+            if not path.is_absolute():
+                path = self.base_dir / path
+            key = self._path_key(path)
+            if key in seen:
+                continue
+            cleaned.append(path)
+            seen.add(key)
+        self.additional_consume_dirs = cleaned
+
+    def source_consume_dir_for(self, file_path: Path) -> Path | None:
+        try:
+            parent = Path(file_path).parent.resolve(strict=False)
+        except Exception:
+            parent = Path(file_path).parent
+        for directory in self.consume_dirs:
+            try:
+                if parent == directory.resolve(strict=False):
+                    return directory
+            except Exception:
+                if parent == directory:
+                    return directory
+        return None
         
     def ensure_directories(self):
-        for d in [self.consume_dir, self.original_dir, self.final_dir, self.error_dir, self.log_dir, self.work_dir]:
+        for d in [*self.consume_dirs, self.original_dir, self.final_dir, self.error_dir, self.log_dir, self.work_dir]:
             d.mkdir(parents=True, exist_ok=True)
             
     def cleanup_error_dir(self):

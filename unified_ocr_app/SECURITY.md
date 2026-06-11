@@ -9,9 +9,15 @@ Die App ist für lokale OCR- und LLM-Verarbeitung ausgelegt. Dokumentinhalte wer
 OAuth-Tokens werden standardmäßig unter `%APPDATA%\UnifiedOCR\google_drive_token.json` gespeichert. Der App-Ordner darf keine folgenden Dateien enthalten:
 
 - `token.json`
+- `google_drive_token.json`
 - `credentials.json`
 - `client_secret*.json`
 - lokale `settings.json`
+- lokale `settings.json.bak`
+- temporaere `settings.json.tmp`
+- `llm_config.yaml`
+- `unified_ocr.sqlite3`
+- `*.sqlite3`
 
 Die `.gitignore` schließt diese Dateien aus. Vor einer Weitergabe oder Veröffentlichung sollte der App-Ordner trotzdem manuell geprüft werden.
 

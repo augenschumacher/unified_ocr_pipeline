@@ -16,6 +16,7 @@ env/
 
 # Local runtime data
 settings.json
+settings.json.bak
 llm_config.yaml
 folder_registry.json
 folder_registry.backup.json

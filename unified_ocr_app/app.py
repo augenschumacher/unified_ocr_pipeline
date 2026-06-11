@@ -1,6 +1,7 @@
 import threading
 import subprocess
 import customtkinter as ctk
+import tkinter as tk
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageDraw
 
@@ -41,6 +42,7 @@ class App(ctk.CTk):
         # â”€â”€ Settings laden (vor allen Widgets) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self.settings_manager   = SettingsManager()
         self.dir_path_var       = ctk.StringVar(value=r"C:\OCR_Workdir")
+        self.additional_consume_dirs = []
         self.format_var         = ctk.StringVar(value="PDF und DOCX")
         self.docx_mode_var      = ctk.StringVar(value="Lesbare DOCX")
         self.think_fusion_var   = ctk.BooleanVar(value=False)
@@ -91,7 +93,7 @@ class App(ctk.CTk):
         self.bind("<Configure>", self._on_configure)
 
         # ================================================================ #
-        #  LINKE SEITE â€“ TabView mit scrollbaren Tabs                      #
+        #  LINKE SEITE - TabView mit scrollbaren Tabs                      #
         # ================================================================ #
         self.tabview = ctk.CTkTabview(self)
         self.tabview.grid(row=1, column=0, padx=(16, 8), pady=(0, 16), sticky="nsew")
@@ -172,11 +174,18 @@ class App(ctk.CTk):
         self.dir_entry.grid(row=0, column=1, padx=10, pady=10, sticky="ew")
         self.browse_btn = ctk.CTkButton(dir_frame, text="Ändern", command=self._browse_dir, width=90)
         self.browse_btn.grid(row=0, column=2, padx=(0, 10), pady=10)
+        self.extra_inputs_btn = ctk.CTkButton(
+            dir_frame,
+            text="Weitere Eingaenge",
+            command=self._manage_input_folders_dialog,
+            width=140,
+        )
+        self.extra_inputs_btn.grid(row=0, column=3, padx=(0, 10), pady=10)
         ctk.CTkLabel(
             dir_frame,
             text="Ordner 'consume', 'original' und 'final' werden automatisch erstellt.",
             text_color="gray", font=ctk.CTkFont(size=11),
-        ).grid(row=1, column=0, columnspan=3, padx=10, pady=(0, 8), sticky="w")
+        ).grid(row=1, column=0, columnspan=4, padx=10, pady=(0, 8), sticky="w")
 
         # â”€â”€ Modell-Auswahl â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         llm_frame = ctk.CTkFrame(self.scroll_main)
@@ -626,7 +635,7 @@ class App(ctk.CTk):
         self.analysis_prompt_text.insert("1.0", self.saved_prompts.get("analysis", defaults["analysis"]))
 
         # ================================================================ #
-        #  RECHTE SEITE â€“ Streaming-Panel mit scrollbarem Wrapper          #
+        #  RECHTE SEITE - Streaming-Panel mit scrollbarem Wrapper          #
         # ================================================================ #
         # Äußerer Rahmen (bleibt fest im Haupt-Grid)
         right_outer = ctk.CTkFrame(self)
@@ -634,7 +643,7 @@ class App(ctk.CTk):
         right_outer.grid_columnconfigure(0, weight=1)
         right_outer.grid_rowconfigure(1, weight=1)   # scroll_stream wächst
 
-        # Überschrift (außerhalb des Scrollbereichs â€“ immer sichtbar)
+        # Überschrift (außerhalb des Scrollbereichs - immer sichtbar)
         ctk.CTkLabel(
             right_outer, text="LLM Live-Ausgabe",
             font=ctk.CTkFont(size=15, weight="bold"),
@@ -646,7 +655,7 @@ class App(ctk.CTk):
         stream_scroll.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
-            stream_scroll, text="🧠 Denkprozess (Chain of Thought):",
+            stream_scroll, text="Denkprozess (Chain of Thought):",
             font=ctk.CTkFont(size=13, weight="bold"),
         ).grid(row=0, column=0, padx=10, pady=(10, 4), sticky="w")
 
@@ -660,7 +669,7 @@ class App(ctk.CTk):
         self.thinking_box.grid(row=1, column=0, padx=10, pady=(0, 14), sticky="ew")
 
         ctk.CTkLabel(
-            stream_scroll, text="✨ Generierte Ausgabe:",
+            stream_scroll, text="Generierte Ausgabe:",
             font=ctk.CTkFont(size=13, weight="bold"),
         ).grid(row=2, column=0, padx=10, pady=(4, 4), sticky="w")
 
@@ -673,7 +682,7 @@ class App(ctk.CTk):
         self.output_box.grid(row=3, column=0, padx=10, pady=(0, 14), sticky="ew")
 
         # ================================================================ #
-        #  RECHTE SEITE 2 â€“ PDF-Vorschau Panel                             #
+        #  RECHTE SEITE 2 - PDF-Vorschau Panel                             #
         # ================================================================ #
         preview_outer = ctk.CTkFrame(self)
         preview_outer.grid(row=1, column=2, padx=(8, 16), pady=(0, 16), sticky="nsew")
@@ -681,7 +690,7 @@ class App(ctk.CTk):
         preview_outer.grid_rowconfigure(1, weight=1)
 
         ctk.CTkLabel(
-            preview_outer, text="📄 PDF-Vorschau",
+            preview_outer, text="PDF-Vorschau",
             font=ctk.CTkFont(size=15, weight="bold"),
         ).grid(row=0, column=0, padx=14, pady=(14, 4), sticky="w")
 
@@ -703,6 +712,7 @@ class App(ctk.CTk):
     def _load_settings(self):
         s = self.settings_manager.settings
         self.dir_path_var.set(s.get("base_dir", r"C:\OCR_Workdir"))
+        self.additional_consume_dirs = list(s.get("additional_consume_dirs", []))
         self.format_var.set(s.get("output_format", "PDF und DOCX"))
         self.docx_mode_var.set(s.get("docx_mode", "Lesbare DOCX"))
         self.think_fusion_var.set(s.get("think_fusion", False))
@@ -771,6 +781,77 @@ class App(ctk.CTk):
         except Exception as exc:
             messagebox.showerror("Synology/WebDAV", f"Verbindungstest fehlgeschlagen:\n{exc}")
 
+    def _app_config(self) -> AppConfig:
+        return AppConfig(self.dir_path_var.get(), self.additional_consume_dirs)
+
+    def _manage_input_folders_dialog(self):
+        base_dir = self.dir_path_var.get()
+        if not base_dir:
+            messagebox.showerror("Fehler", "Bitte waehlen Sie zuerst einen Basis-Ordner aus.")
+            return
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Weitere Eingaenge")
+        dialog.geometry("760x430")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_rowconfigure(2, weight=1)
+
+        primary = AppConfig(base_dir).consume_dir
+        ctk.CTkLabel(
+            dialog,
+            text=f"Primaerer Eingang: {primary}",
+            anchor="w",
+        ).grid(row=0, column=0, padx=18, pady=(16, 4), sticky="ew")
+        ctk.CTkLabel(
+            dialog,
+            text="Zusaetzliche Ordner werden vom Watchdog ebenfalls verarbeitet.",
+            text_color="gray",
+            anchor="w",
+        ).grid(row=1, column=0, padx=18, pady=(0, 8), sticky="ew")
+
+        listbox = tk.Listbox(dialog, height=10, activestyle="dotbox")
+        listbox.grid(row=2, column=0, padx=18, pady=8, sticky="nsew")
+        for path in self.additional_consume_dirs:
+            listbox.insert("end", path)
+
+        button_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        button_frame.grid(row=3, column=0, padx=18, pady=(8, 16), sticky="ew")
+        for col in range(4):
+            button_frame.grid_columnconfigure(col, weight=1)
+
+        def add_folder():
+            initial = self.dir_path_var.get() or str(primary)
+            path = filedialog.askdirectory(initialdir=initial, parent=dialog)
+            if not path:
+                return
+            existing = {listbox.get(i).lower() for i in range(listbox.size())}
+            if path.lower() not in existing:
+                listbox.insert("end", path)
+
+        def remove_selected():
+            selected = list(listbox.curselection())
+            for index in reversed(selected):
+                listbox.delete(index)
+
+        def save_and_close():
+            self.additional_consume_dirs = [listbox.get(i) for i in range(listbox.size())]
+            if not self._save_settings(show_message=False):
+                return
+            self._refresh_dashboard()
+            if self.watcher and self.watcher.is_running:
+                messagebox.showinfo(
+                    "Weitere Eingaenge",
+                    "Die Aenderung wird beim naechsten Start der Ueberwachung aktiv.",
+                )
+            dialog.destroy()
+
+        ctk.CTkButton(button_frame, text="Hinzufuegen", command=add_folder).grid(row=0, column=0, padx=(0, 6), sticky="ew")
+        ctk.CTkButton(button_frame, text="Entfernen", command=remove_selected).grid(row=0, column=1, padx=6, sticky="ew")
+        ctk.CTkButton(button_frame, text="Speichern", command=save_and_close).grid(row=0, column=2, padx=6, sticky="ew")
+        ctk.CTkButton(button_frame, text="Schliessen", command=dialog.destroy, fg_color="#6b7280").grid(row=0, column=3, padx=(6, 0), sticky="ew")
+
     def _open_folder(self, path):
         import os
         from pathlib import Path
@@ -787,14 +868,14 @@ class App(ctk.CTk):
         if not base_dir:
             messagebox.showerror("Fehler", "Bitte wählen Sie zuerst einen Basis-Ordner aus.")
             return
-        self._open_folder(AppConfig(base_dir).consume_dir)
+        self._open_folder(self._app_config().consume_dir)
 
     def _open_final_folder(self):
         base_dir = self.dir_path_var.get()
         if not base_dir:
             messagebox.showerror("Fehler", "Bitte wählen Sie zuerst einen Basis-Ordner aus.")
             return
-        self._open_folder(AppConfig(base_dir).final_dir)
+        self._open_folder(self._app_config().final_dir)
 
     def _refresh_dashboard(self):
         base_dir = self.dir_path_var.get()
@@ -807,12 +888,15 @@ class App(ctk.CTk):
             return
 
         try:
-            config = AppConfig(base_dir)
-            if config.consume_dir.exists():
-                consume_count = sum(1 for item in config.consume_dir.iterdir() if item.is_file())
-            else:
-                consume_count = 0
-            self.status_consume_var.set(f"{consume_count} Dateien")
+            config = self._app_config()
+            consume_count = 0
+            active_dirs = 0
+            for consume_dir in config.consume_dirs:
+                if consume_dir.exists():
+                    active_dirs += 1
+                    consume_count += sum(1 for item in consume_dir.iterdir() if item.is_file())
+            suffix = f" / {active_dirs} Eing." if active_dirs > 1 else ""
+            self.status_consume_var.set(f"{consume_count} Dateien{suffix}")
         except Exception:
             self.status_consume_var.set("-")
 
@@ -867,6 +951,7 @@ class App(ctk.CTk):
     def _save_settings(self, show_message: bool = False):
         settings = {
             "base_dir":       self.dir_path_var.get(),
+            "additional_consume_dirs": self.additional_consume_dirs,
             "output_format":  self.format_var.get(),
             "docx_mode":      self.docx_mode_var.get(),
             "think_fusion":   self.think_fusion_var.get(),
@@ -930,8 +1015,10 @@ class App(ctk.CTk):
             if show_message:
                 messagebox.showinfo("Gespeichert", "Einstellungen wurden gespeichert.")
             self._refresh_dashboard()
+            return True
         except Exception as e:
             messagebox.showerror("Fehler", f"Konnte Einstellungen nicht speichern:\n{e}")
+            return False
 
     def _run_system_check_dialog(self):
         from core.system_check import format_system_check, run_system_check
@@ -1030,7 +1117,7 @@ class App(ctk.CTk):
                 gemini_models = []
                 try:
                     import requests as _req
-                    resp = _req.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={google_key}", timeout=5)
+                    resp = _req.get(f"https://generativelanguage.googleapis.com/v1beta/modelskey={google_key}", timeout=5)
                     if resp.ok:
                         data = resp.json()
                         for m in data.get("models", []):
@@ -1140,7 +1227,7 @@ class App(ctk.CTk):
         if not base_dir:
             messagebox.showerror("Fehler", "Bitte wähle einen Basis-Ordner aus.")
             return
-        config = AppConfig(base_dir)
+        config = self._app_config()
         config.ensure_directories()
         
         if self.organize_enabled_var.get():
@@ -1198,6 +1285,7 @@ class App(ctk.CTk):
         )
         self.dir_entry.configure(state="disabled")
         self.browse_btn.configure(state="disabled")
+        self.extra_inputs_btn.configure(state="disabled")
         self._refresh_dashboard()
 
     def _stop_watchdog(self):
@@ -1208,6 +1296,7 @@ class App(ctk.CTk):
         )
         self.dir_entry.configure(state="normal")
         self.browse_btn.configure(state="normal")
+        self.extra_inputs_btn.configure(state="normal")
         self._refresh_dashboard()
 
     # ------------------------------------------------------------------ #
@@ -1287,7 +1376,7 @@ class App(ctk.CTk):
             return
 
         try:
-            config = AppConfig(base_dir)
+            config = self._app_config()
             config.ensure_directories()
             from core.cloud.folder_registry import FolderRegistry
             registry = FolderRegistry(base_dir)
@@ -1451,7 +1540,7 @@ class App(ctk.CTk):
             f"Das LLM schlägt vor, das Dokument in einen neuen Ordner\n"
             f"einzusortieren:\n\n"
             f"»  {proposed_path}  «\n\n"
-            f"Wie soll verfahren werden?"
+            f"Wie soll verfahren werden"
         )
         ctk.CTkLabel(dialog, text=msg, justify="center").pack(padx=20, pady=10)
 
@@ -1510,29 +1599,30 @@ class App(ctk.CTk):
         )
         btn_select.pack(side="left", padx=5)
 
-    def prompt_sorting_choice(self, classification_result: dict, known_paths: list, proposed_path: str) -> str | None:
+    def prompt_sorting_choice(self, classification_result: dict, known_paths: list, proposed_path: str, preview_pdf_path=None) -> str | None:
         result_container = []
         event = threading.Event()
-        self.after(0, self._show_sorting_choice_dialog, classification_result, known_paths, proposed_path, result_container, event)
+        self.after(0, self._show_sorting_choice_dialog, classification_result, known_paths, proposed_path, preview_pdf_path, result_container, event)
         event.wait()
         return result_container[0] if result_container else None
 
-    def _show_sorting_choice_dialog(self, classification_result: dict, known_paths: list, proposed_path: str, result_container: list, event: threading.Event):
+    def _show_sorting_choice_dialog(self, classification_result: dict, known_paths: list, proposed_path: str, preview_pdf_path, result_container: list, event: threading.Event):
         dialog = ctk.CTkToplevel(self)
         dialog.title("Zielordner bestätigen")
-        dialog.geometry("720x560")
-        dialog.minsize(620, 460)
+        dialog.geometry("1120x680")
+        dialog.minsize(900, 560)
         dialog.transient(self)
         dialog.grab_set()
 
-        dialog.grid_columnconfigure(0, weight=1)
+        dialog.grid_columnconfigure(0, weight=1, minsize=360)
+        dialog.grid_columnconfigure(1, weight=1, minsize=430)
         dialog.grid_rowconfigure(2, weight=1)
 
         ctk.CTkLabel(
             dialog,
             text="Zielordner bestätigen",
             font=ctk.CTkFont(size=18, weight="bold"),
-        ).grid(row=0, column=0, padx=20, pady=(18, 4), sticky="w")
+        ).grid(row=0, column=0, columnspan=2, padx=20, pady=(18, 4), sticky="w")
 
         confidence = classification_result.get("confidence", classification_result.get("score", 0))
         reason = classification_result.get("reason", "unsicher")
@@ -1540,11 +1630,27 @@ class App(ctk.CTk):
             dialog,
             text=f"Die automatische Einordnung ist nicht eindeutig genug. Vorschlag: {proposed_path} ({confidence} %, {reason})",
             text_color="gray",
-            wraplength=660,
-        ).grid(row=1, column=0, padx=20, pady=(0, 10), sticky="ew")
+            wraplength=980,
+        ).grid(row=1, column=0, columnspan=2, padx=20, pady=(0, 10), sticky="ew")
+
+        preview_frame = ctk.CTkFrame(dialog)
+        preview_frame.grid(row=2, column=0, padx=(20, 8), pady=8, sticky="nsew")
+        preview_frame.grid_columnconfigure(0, weight=1)
+        preview_frame.grid_rowconfigure(1, weight=1)
+        ctk.CTkLabel(
+            preview_frame,
+            text="Dokumentvorschau",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).grid(row=0, column=0, padx=12, pady=(12, 6), sticky="w")
+        pdf_viewer = PDFPreviewFrame(preview_frame)
+        pdf_viewer.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
+        if preview_pdf_path:
+            dialog.after(100, pdf_viewer.load_pdf, str(preview_pdf_path))
+        else:
+            pdf_viewer.image_label.configure(text="Keine Dokumentvorschau verfuegbar.", image=None)
 
         scroll = ctk.CTkScrollableFrame(dialog)
-        scroll.grid(row=2, column=0, padx=20, pady=8, sticky="nsew")
+        scroll.grid(row=2, column=1, padx=(8, 20), pady=8, sticky="nsew")
         scroll.grid_columnconfigure(0, weight=1)
 
         def select(path: str):
@@ -1571,13 +1677,13 @@ class App(ctk.CTk):
                     frame,
                     text="Hinweise: " + ", ".join(str(item) for item in evidence[:5]),
                     text_color="gray",
-                    wraplength=520,
+                    wraplength=420,
                 ).grid(row=1, column=0, padx=10, pady=(0, 8), sticky="w")
             ctk.CTkButton(frame, text="Diesen Pfad wählen", width=140, command=lambda p=path: select(p)).grid(row=0, column=1, rowspan=2, padx=10, pady=8)
             row += 1
 
         manual_frame = ctk.CTkFrame(dialog)
-        manual_frame.grid(row=3, column=0, padx=20, pady=(8, 16), sticky="ew")
+        manual_frame.grid(row=3, column=0, columnspan=2, padx=20, pady=(8, 16), sticky="ew")
         manual_frame.grid_columnconfigure(1, weight=1)
 
         paths = list(dict.fromkeys([p for p in known_paths if p] + [proposed_path, "Sonstiges"]))
@@ -1639,7 +1745,7 @@ class App(ctk.CTk):
         preview_frame.grid_rowconfigure(1, weight=1)
         
         ctk.CTkLabel(
-            preview_frame, text="📄 Original-Dokument",
+            preview_frame, text="Original-Dokument",
             font=ctk.CTkFont(size=14, weight="bold")
         ).grid(row=0, column=0, padx=10, pady=(10, 5), sticky="w")
         

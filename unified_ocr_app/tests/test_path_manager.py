@@ -1,45 +1,39 @@
-from ui.path_manager import (
-    apply_standard_template,
-    create_final_directories,
-    validate_folder_name,
-)
+from ui.path_manager import remap_context_paths, rename_child_node
 
 
-def test_validate_folder_name_rejects_windows_invalid_names():
-    for name in ["", "A/B", "A\\B", "A:B", "CON", "NUL", "Name.", "Name "]:
-        ok, _ = validate_folder_name(name)
-        assert not ok
+def test_rename_child_node_preserves_subtree():
+    node = {"Auto": {"Golf": {}}, "Gesundheit": {}}
 
+    ok, new_name = rename_child_node(node, "Auto", "Fahrzeuge")
 
-def test_validate_folder_name_accepts_person_name():
-    ok, _ = validate_folder_name("Jan")
     assert ok
+    assert new_name == "Fahrzeuge"
+    assert "Auto" not in node
+    assert node["Fahrzeuge"] == {"Golf": {}}
+    assert "Gesundheit" in node
 
 
-def test_standard_template_uses_person_as_primary_path():
-    tree = {}
-    added, rejected = apply_standard_template(tree, ["Jan"])
+def test_rename_child_node_rejects_duplicate_case_insensitive():
+    node = {"Auto": {}, "Gesundheit": {}}
 
-    assert rejected == []
-    assert added > 1
-    assert "Jan" in tree
-    assert "Gesundheit" in tree["Jan"]
-    assert "Finanzen" in tree["Jan"]
+    ok, message = rename_child_node(node, "Auto", "gesundheit")
 
-
-def test_standard_template_prevents_case_insensitive_duplicates():
-    tree = {"Jan": {"Gesundheit": {}}}
-    apply_standard_template(tree, ["jan"])
-
-    assert sorted(tree.keys()) == ["Jan"]
-    assert "Gesundheit" in tree["Jan"]
+    assert not ok
+    assert "existiert bereits" in message
+    assert set(node) == {"Auto", "Gesundheit"}
 
 
-def test_create_final_directories(tmp_path):
-    tree = {"Jan": {"Gesundheit": {}, "Finanzen": {}}}
-    created = create_final_directories(tmp_path, tree)
+def test_remap_context_paths_updates_descendants():
+    contexts = {
+        "Fabio/Auto": {"notes": "root"},
+        "Fabio/Auto/Golf": {"notes": "child"},
+        "Fabio/Gesundheit": {"notes": "other"},
+    }
 
-    assert tmp_path.joinpath("final", "Jan").is_dir()
-    assert tmp_path.joinpath("final", "Jan", "Gesundheit").is_dir()
-    assert tmp_path.joinpath("final", "Jan", "Finanzen").is_dir()
-    assert len(created) == 3
+    remapped = remap_context_paths(contexts, "Fabio/Auto", "Fabio/Fahrzeuge")
+
+    assert "Fabio/Auto" not in remapped
+    assert "Fabio/Auto/Golf" not in remapped
+    assert remapped["Fabio/Fahrzeuge"] == {"notes": "root"}
+    assert remapped["Fabio/Fahrzeuge/Golf"] == {"notes": "child"}
+    assert remapped["Fabio/Gesundheit"] == {"notes": "other"}

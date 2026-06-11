@@ -11,7 +11,7 @@ oder Synology/WebDAV-Ablagestruktur organisieren.
 
 ## Features
 
-- Ueberwachter Eingangsordner fuer PDF, PNG, JPG, HEIC, DOCX, ODT, DOC und ODOC
+- Ueberwachter Primaer-Eingang plus optionale weitere Eingangsordner fuer PDF, PNG, JPG, HEIC, DOCX, ODT, DOC und ODOC
 - OCRmyPDF plus Docling-Extraktion
 - Optionale LLM-Stufen fuer GLM-OCR, Vision-Review, Text-Fusion und Analyse
 - Unterstuetzung fuer lokale Ollama-Modelle und API-Provider ueber LiteLLM
@@ -104,7 +104,27 @@ Dokumentensortierung aktiv ist und noch keine Ablagepfade existieren.
 - Die Standardvorlage legt Kategorien wie `Gesundheit`, `Finanzen`, `Versicherungen`, `Steuern`, `Schule`, `Wohnen` und `Sonstiges` unter jeder Person an.
 - Beim Speichern werden die Registry `folder_registry.json` und die realen Zielordner unter `<Basisordner>/final` erstellt.
 - Wenn die Dokumentensortierung deaktiviert ist, kann die Ueberwachung auch ohne Ablagepfade gestartet werden.
-- Die Ablagestruktur kann spaeter in der App erweitert oder geaendert werden.
+- Die Ablagestruktur kann spaeter in der App erweitert oder geaendert werden. Bestehende Pfade koennen im Pfad-Manager umbenannt werden; Unterordner und Sortier-Kontexte bleiben dabei erhalten.
+- Beim Umbenennen versucht die App, den passenden lokalen Ordner unter `<Basisordner>/final` mitzubewegen. Existiert der Zielordner bereits, wird nichts ueberschrieben und die App meldet den Konflikt.
+
+### Eingangsordner
+
+Die App legt weiterhin automatisch `<Basisordner>/consume` als primaeren
+Eingang an. Ueber `Weitere Eingaenge` koennen zusaetzliche absolute Ordner
+hinzugefuegt werden, zum Beispiel Scanner-, Download- oder Profilordner. Der
+Watchdog ueberwacht alle konfigurierten Eingaenge, verarbeitet aber weiterhin
+in eine gemeinsame Pipeline und sortiert die Ergebnisse anschliessend nach der
+Ablagestruktur.
+
+Die Quelle eines Jobs wird im Job-Manifest und im Diagnosebericht als
+`input_dir`/`input_profile` gespeichert. So bleibt nachvollziehbar, ob ein
+Dokument aus dem Standard-Eingang, einem Scanner-Ordner oder einem anderen
+Profilordner kam.
+
+Zusaetzliche Eingaenge duerfen nicht auf das Basisverzeichnis selbst und nicht
+in reservierte App-Bereiche wie `final`, `work`, `logs`, `original` oder
+`error` zeigen. Dadurch verarbeitet die App keine eigenen Ergebnisse,
+Zwischendateien oder Fehlerartefakte erneut.
 
 ### Intelligente Sortier-Kontexte
 
@@ -133,7 +153,8 @@ Kandidaten werden abgefragt; eindeutige Treffer werden automatisch einsortiert.
 Unsichere Sortierungen und neue Pfadvorschlaege werden zusaetzlich in der
 lokalen Review-Queue gespeichert. Die App zeigt mehrere Kandidaten mit Score
 und Begruendung an. Bestaetigte oder korrigierte Entscheidungen verbessern den
-Lernspeicher.
+Lernspeicher. Wenn die App waehrend der Verarbeitung nach dem Zielpfad fragt,
+zeigt der Dialog zusaetzlich eine PDF-Vorschau des Dokuments an.
 
 ## LLM Provider
 
@@ -266,6 +287,12 @@ Dort koennen insbesondere liegen:
 - `classification_memory.json`
 - `unified_ocr.sqlite3`
 
+Einstellungen werden atomar gespeichert: Vor dem Ersetzen der aktiven
+`settings.json` schreibt die App zuerst eine vollstaendige temporaere Datei und
+legt bei vorhandenen Einstellungen eine Sicherung `settings.json.bak` an. So
+bleibt die letzte gueltige Konfiguration erhalten, falls ein Schreibvorgang
+abbricht.
+
 Pro Job erzeugt die App zusaetzlich ein Manifest. Bei erfolgreichen Jobs wird
 es unter `<Basisordner>/final/begleitdateien/*_job_manifest.json` abgelegt, bei
 fehlgeschlagenen Jobs im Error-Bereich. Darin stehen Eingabe-Hashes,
@@ -285,7 +312,9 @@ nicht veroeffentlicht werden.
 
 Der App-Ordner selbst sollte keine Tokens, Credentials, Logs oder lokalen
 Settings enthalten. Die `.gitignore` schliesst diese Dateien aus, eine manuelle
-Pruefung vor jedem Release bleibt trotzdem sinnvoll.
+Pruefung vor jedem Release bleibt trotzdem sinnvoll. Der lokale Release-Check
+prueft zusaetzlich, ob Versionsangaben und Abhaengigkeiten in `pyproject.toml`,
+`requirements.txt` und `unified_ocr_app/requirements.txt` synchron sind.
 
 ## Lizenz
 
@@ -319,18 +348,23 @@ Besonders wichtig:
 
 ```powershell
 py -3.10 -m pytest
+py -3.10 release_check.py
+py -3.10 doctor.py --base-dir C:\OCR_Workdir
 ```
 
 Vor einem Release:
 
 1. Tests ausfuehren.
-2. App mit `ocr_pipeline.bat` starten.
-3. Basisordner und Setup-Wizard pruefen.
-4. Ein Testdokument in den Eingangsordner legen.
-5. Ergebnisdateien, Qualitaetsbericht und Job-Historie pruefen.
-6. Job-Manifest im Ordner `begleitdateien` pruefen.
-7. Google Drive nur mit Testdaten pruefen.
-8. Sicherstellen, dass keine Dateien wie `settings.json`, `llm_config.yaml`, `credentials.json`, `google_drive_token.json`, `token.json`, `.env`, `*.key` oder `*.pem` im Repository liegen.
+2. Lokalen Release-Check mit `py -3.10 release_check.py` ausfuehren.
+3. Doctor-Check mit `py -3.10 doctor.py --base-dir C:\OCR_Workdir` auf dem Zielsystem ausfuehren.
+4. Nach Push/PR pruefen, dass GitHub Actions `pytest` und den Release-Check erfolgreich ausfuehrt.
+5. App mit `ocr_pipeline.bat` starten.
+6. Basisordner und Setup-Wizard pruefen.
+7. Ein Testdokument in den Eingangsordner legen.
+8. Ergebnisdateien, Qualitaetsbericht und Job-Historie pruefen.
+9. Job-Manifest im Ordner `begleitdateien` pruefen.
+10. Google Drive nur mit Testdaten pruefen.
+11. Sicherstellen, dass keine Dateien wie `settings.json`, `settings.json.bak`, `settings.json.tmp`, `llm_config.yaml`, `credentials.json`, `google_drive_token.json`, `token.json`, `.env`, `*.key`, `*.pem`, `*.sqlite3`, `*.log` oder `*.tmp` im Repository liegen.
 
 ## Bekannte Grenzen
 

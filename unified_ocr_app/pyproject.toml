@@ -42,9 +42,11 @@ dev = [
 
 [project.scripts]
 unified-ocr = "app:main"
+unified-ocr-doctor = "doctor:main"
+unified-ocr-release-check = "release_check:main"
 
 [tool.setuptools]
-py-modules = ["app"]
+py-modules = ["app", "doctor", "release_check"]
 packages = ["core", "core.cloud", "core.llm", "core.ocr", "ui"]
 
 [tool.pytest.ini_options]

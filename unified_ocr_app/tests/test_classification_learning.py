@@ -93,10 +93,12 @@ def test_stage_organize_prompts_on_close_candidates_and_records_learning(tmp_pat
         "Autohaus Rechnung Service Inspektion Model 3",
         {"document_type": "Service"},
         final_name,
+        preview_pdf_path=source_file,
     )
 
     assert target_path == "Jan/Auto/Tesla"
     assert prompt.called
+    assert prompt.call_args.args[3] == source_file
     assert moved
     assert config.final_dir.joinpath("Jan", "Auto", "Tesla", source_file.name).exists()
 

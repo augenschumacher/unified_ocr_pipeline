@@ -94,6 +94,48 @@ def add_child_node(node: dict, name: str) -> tuple[bool, str]:
     return True, cleaned
 
 
+def rename_child_node(node: dict, old_name: str, new_name: str) -> tuple[bool, str]:
+    cleaned = normalize_folder_name(new_name)
+    ok, message = validate_folder_name(cleaned)
+    if not ok:
+        return False, message
+    if old_name not in node:
+        return False, f"Der Ordner '{old_name}' existiert nicht mehr."
+    existing = find_case_insensitive_key(node, cleaned)
+    if existing and existing != old_name:
+        return False, f"Der Ordner '{existing}' existiert bereits auf dieser Ebene."
+    if cleaned == old_name:
+        return False, "Der neue Name ist identisch mit dem bisherigen Namen."
+
+    keys = list(node.keys())
+    subtree = node.pop(old_name)
+    rebuilt = {}
+    for key in keys:
+        rebuilt[cleaned if key == old_name else key] = subtree if key == old_name else node[key]
+    node.clear()
+    node.update(rebuilt)
+    return True, cleaned
+
+
+def remap_context_paths(contexts: dict, old_path: str, new_path: str) -> dict:
+    old_path = old_path.strip().replace("\\", "/")
+    new_path = new_path.strip().replace("\\", "/")
+    if not old_path or not new_path or old_path == new_path:
+        return dict(contexts)
+
+    result = {}
+    prefix = old_path + "/"
+    for path, context in (contexts or {}).items():
+        normalized = path.strip().replace("\\", "/")
+        if normalized == old_path:
+            result[new_path] = context
+        elif normalized.startswith(prefix):
+            result[new_path + normalized[len(old_path):]] = context
+        else:
+            result[normalized] = context
+    return result
+
+
 def apply_standard_template(tree: dict, primary_paths: list[str]) -> tuple[int, list[str]]:
     """Apply default categories below each person/primary path."""
     added = 0
@@ -288,6 +330,7 @@ class PathManagerWindow(ctk.CTkToplevel):
         self.registry = FolderRegistry(self.base_dir)
         self.tree = self.registry.get_tree()
         self.path_contexts = dict(self.registry.get_path_contexts())
+        self.pending_path_moves: list[tuple[str, str]] = []
 
         self.title("Pfad-Konfiguration & Setup-Wizard")
         self.geometry("900x590")
@@ -603,6 +646,17 @@ class PathManagerWindow(ctk.CTkToplevel):
             )
             context_btn.pack(side="right", padx=(0, 5))
 
+            rename_btn = ctk.CTkButton(
+                row_frame,
+                text="Ändern",
+                width=70,
+                height=35,
+                fg_color=self.color_inactive,
+                text_color=self.color_tab_inactive_text,
+                command=lambda c=child: self.rename_item(c),
+            )
+            rename_btn.pack(side="right", padx=(0, 5))
+
             del_btn = ctk.CTkButton(
                 row_frame,
                 text="X",
@@ -634,6 +688,32 @@ class PathManagerWindow(ctk.CTkToplevel):
 
         if child in node:
             del node[child]
+        self.populate_right_panel()
+
+    def rename_item(self, child):
+        node = get_node_by_path(self.tree, self.selected_parent_path) if self.selected_parent_path else self.tree
+        if child not in node:
+            messagebox.showerror("Fehler", "Der gewaehlte Eintrag existiert nicht mehr.")
+            self.populate_right_panel()
+            return
+
+        dialog = ctk.CTkInputDialog(
+            text=f"Neuer Name fuer '{child}':",
+            title="Pfad aendern",
+        )
+        new_name = dialog.get_input()
+        if new_name is None:
+            return
+
+        old_full_path = "/".join([*self.selected_parent_path, child])
+        ok, result = rename_child_node(node, child, new_name)
+        if not ok:
+            messagebox.showerror("Fehler", result)
+            return
+
+        new_full_path = "/".join([*self.selected_parent_path, result])
+        self.path_contexts = remap_context_paths(self.path_contexts, old_full_path, new_full_path)
+        self.pending_path_moves.append((old_full_path, new_full_path))
         self.populate_right_panel()
 
     def add_new_item(self):
@@ -676,6 +756,25 @@ class PathManagerWindow(ctk.CTkToplevel):
         self.registry.save_tree(self.tree)
         self.registry.data["path_contexts"] = self._filtered_contexts()
         self.registry.save()
+
+    def _apply_pending_directory_moves(self) -> list[str]:
+        warnings = []
+        final_dir = self.base_dir / "final"
+        for old_path, new_path in sorted(self.pending_path_moves, key=lambda item: item[0].count("/")):
+            old_dir = final_dir.joinpath(*[part for part in old_path.split("/") if part])
+            new_dir = final_dir.joinpath(*[part for part in new_path.split("/") if part])
+            if old_dir == new_dir or not old_dir.exists():
+                continue
+            if new_dir.exists():
+                warnings.append(f"{old_path} -> {new_path}: Zielordner existiert bereits, alter Ordner wurde nicht verschoben.")
+                continue
+            try:
+                new_dir.parent.mkdir(parents=True, exist_ok=True)
+                old_dir.rename(new_dir)
+            except OSError as exc:
+                warnings.append(f"{old_path} -> {new_path}: {exc}")
+        self.pending_path_moves.clear()
+        return warnings
 
     def open_template_dialog(self):
         TemplateDialog(self, list(self.tree.keys()), self.apply_template)
@@ -783,9 +882,16 @@ class PathManagerWindow(ctk.CTkToplevel):
 
         try:
             self._save_tree_and_contexts()
+            move_warnings = self._apply_pending_directory_moves()
             created = create_final_directories(self.base_dir, self.tree)
             if self.on_save_callback:
                 self.on_save_callback(created)
+            if move_warnings:
+                messagebox.showwarning(
+                    "Einige Ordner wurden nicht verschoben",
+                    "Die Registry wurde gespeichert, aber einzelne lokale Ordner konnten nicht automatisch verschoben werden:\n\n"
+                    + "\n".join(move_warnings[:8]),
+                )
             self.destroy()
         except Exception as e:
             messagebox.showerror("Fehler", f"Konnte Konfiguration nicht speichern: {e}")

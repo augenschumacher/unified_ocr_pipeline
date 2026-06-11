@@ -86,6 +86,13 @@ class JobManifest:
         self.data["metadata"] = _path_value(metadata or {})
         self.write()
 
+    def record_source_context(self, *, input_dir: Path | str | None = None, input_profile: str | None = None):
+        if input_dir:
+            self.data["source"]["input_dir"] = str(input_dir)
+        if input_profile:
+            self.data["source"]["input_profile"] = str(input_profile)
+        self.write()
+
     def record_drive_uploads(self, *, enabled: bool, uploads: list[dict[str, Any]] | None):
         self.data["drive"] = {
             "enabled": bool(enabled),

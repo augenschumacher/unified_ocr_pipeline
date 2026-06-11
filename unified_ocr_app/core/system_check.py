@@ -5,6 +5,7 @@ from __future__ import annotations
 import platform
 import shutil
 import sys
+import importlib.util
 from pathlib import Path
 
 
@@ -15,6 +16,19 @@ def _command_status(name: str) -> dict:
         "ok": bool(path),
         "path": path or "",
         "message": "gefunden" if path else "nicht gefunden",
+    }
+
+
+def _command_or_module_status(command_name: str, module_name: str) -> dict:
+    command = _command_status(command_name)
+    if command["ok"]:
+        return command
+    spec = importlib.util.find_spec(module_name)
+    return {
+        "name": command_name,
+        "ok": bool(spec),
+        "path": getattr(spec, "origin", "") if spec else "",
+        "message": "Python-Modul gefunden" if spec else "nicht gefunden",
     }
 
 
@@ -30,6 +44,12 @@ def _writable_status(path: Path) -> dict:
 
 
 def run_system_check(base_dir: str | Path, *, credentials_path: str | None = None, token_path: str | None = None) -> dict:
+    try:
+        from core.config import setup_paths
+        setup_paths()
+    except Exception:
+        pass
+
     base = Path(base_dir)
     python_ok = sys.version_info[:2] == (3, 10)
     checks = {
@@ -40,7 +60,7 @@ def run_system_check(base_dir: str | Path, *, credentials_path: str | None = Non
         },
         "commands": [
             _command_status("tesseract"),
-            _command_status("ocrmypdf"),
+            _command_or_module_status("ocrmypdf", "ocrmypdf"),
             _command_status("gswin64c") if platform.system().lower() == "windows" else _command_status("gs"),
         ],
         "directories": [

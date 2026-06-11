@@ -15,6 +15,7 @@ venv/
 env/
 
 settings.json
+settings.json.bak
 llm_config.yaml
 folder_registry.json
 folder_registry.backup.json
@@ -25,9 +26,13 @@ credentials.json
 google_drive_token.json
 client_secret*.json
 *.env
+.env
+.env.*
 *.key
 *.pem
 *.log
+*.sqlite3
+cache.db
 logs/
 temp_work/
 test_temp.pdf
@@ -35,3 +40,7 @@ test_temp.pdf
 *.tmp
 *.part
 *.crdownload
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

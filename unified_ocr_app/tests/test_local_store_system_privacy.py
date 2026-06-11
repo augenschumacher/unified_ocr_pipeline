@@ -1,10 +1,11 @@
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from core.job_history import JobHistory
 from core.local_store import LocalStore
 from core.privacy import is_external_model, redact_sensitive_text
-from core.system_check import format_system_check, run_system_check
+from core.system_check import _command_or_module_status, format_system_check, run_system_check
 
 
 class Config:
@@ -83,3 +84,15 @@ def test_system_check_returns_structured_result(tmp_path):
     assert "python" in checks
     assert "commands" in checks
     assert "Ordner:" in rendered
+
+
+def test_system_check_accepts_ocrmypdf_python_module_when_command_missing():
+    class Spec:
+        origin = "module-origin"
+
+    with patch("core.system_check.shutil.which", return_value=None), \
+         patch("core.system_check.importlib.util.find_spec", return_value=Spec()):
+        status = _command_or_module_status("ocrmypdf", "ocrmypdf")
+
+    assert status["ok"] is True
+    assert status["message"] == "Python-Modul gefunden"
