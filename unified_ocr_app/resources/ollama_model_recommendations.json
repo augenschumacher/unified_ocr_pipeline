@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "updated": "2026-06-20",
+  "source_note": "Local release recommendations. Verify exact tags in Ollama before publishing a release.",
+  "tiers": [
+    {
+      "vram_gb": 8,
+      "label": "8 GB VRAM - fluessig und konservativ",
+      "glm_ocr": "glm-ocr:bf16",
+      "vision": "qwen3-vl:4b-instruct-q4_K_M",
+      "fusion": "gemma4:e4b-it-qat",
+      "analysis": "gemma4:e4b-it-qat",
+      "estimated_download_gb": 18,
+      "required_free_gb": 25,
+      "notes": "Kleine Vision-Stufe, Gemma4 QAT fuer Text-Fusion/Analyse."
+    },
+    {
+      "vram_gb": 12,
+      "label": "12 GB VRAM - ausgewogen",
+      "glm_ocr": "glm-ocr:bf16",
+      "vision": "qwen3-vl:8b-instruct-q4_K_M",
+      "fusion": "gemma4:12b-it-qat",
+      "analysis": "gemma4:12b-it-qat",
+      "estimated_download_gb": 30,
+      "required_free_gb": 40,
+      "notes": "Bessere Vision-Qualitaet und 12B-QAT fuer Textaufgaben."
+    },
+    {
+      "vram_gb": 16,
+      "label": "16 GB VRAM - stark fuer lange Dokumente",
+      "glm_ocr": "glm-ocr:bf16",
+      "vision": "qwen3-vl:8b-instruct-q4_K_M",
+      "fusion": "gemma4:12b-it-qat",
+      "analysis": "gemma4:12b-it-qat",
+      "estimated_download_gb": 30,
+      "required_free_gb": 40,
+      "notes": "Gute Reserve fuer grosse Seitenbilder und 256K-Kontextmodelle."
+    },
+    {
+      "vram_gb": 24,
+      "label": "24 GB VRAM - grosse MoE/QAT-Stufe",
+      "glm_ocr": "glm-ocr:bf16",
+      "vision": "qwen3-vl:30b-a3b-instruct-q4_K_M",
+      "fusion": "gemma4:26b-a4b-it-qat",
+      "analysis": "gemma4:26b-a4b-it-qat",
+      "estimated_download_gb": 65,
+      "required_free_gb": 85,
+      "notes": "MoE/QAT-Empfehlung; Modelle sollten nacheinander entladen werden."
+    },
+    {
+      "vram_gb": 32,
+      "label": "32 GB VRAM - maximale lokale Qualitaet",
+      "glm_ocr": "glm-ocr:bf16",
+      "vision": "qwen3-vl:32b-instruct-q4_K_M",
+      "fusion": "gemma4:31b-it-qat",
+      "analysis": "gemma4:31b-it-qat",
+      "estimated_download_gb": 82,
+      "required_free_gb": 105,
+      "notes": "Sehr starke lokale Modelle; grosse Downloads und viel Plattenplatz."
+    }
+  ]
+}

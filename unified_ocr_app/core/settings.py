@@ -12,45 +12,52 @@ from core.runtime_paths import (
     normalize_credentials_path,
     harden_private_file,
 )
+from core.credential_store import (
+    SYNOLOGY_PASSWORD_NAME,
+    delete_secret,
+    is_secret_ref,
+    load_secret,
+    store_secret,
+)
+from core.model_recommendations import default_recommendation
+from core.ocr.pdf_prep import normalize_ocr_languages, normalize_ocr_mode
 
 
 logger = logging.getLogger("UnifiedOCR")
 
 
 class SettingsManager:
-    CURRENT_PROMPT_VERSION = 2
+    CURRENT_PROMPT_VERSION = 3
 
     def __init__(self, settings_file: str | Path | None = None):
         self.uses_default_location = settings_file is None
         self.settings_file = Path(settings_file) if settings_file is not None else default_settings_path()
         self.default_prompts = {
             "vision": (
-                "Du bist ein medizinischer OCR-Korrektor und Layout-Analyst. "
-                "Dir wird ein Bild einer Dokumentenseite und die vorläufig extrahierten Markdown-Chunks dieser Seite übergeben. "
-                "Prüfe das OCR-Ergebnis (Tabellenstrukturen, Absätze, visuelle Formatierungen wie Überschriften, Fettung, Kursivschrift) kritisch anhand des Bildes. "
-                "Korrigiere Fehler, ergänze Fehlendes und gib das finale, bereinigte Zwischen-Markdown für diese Seite zurück. "
-                "WICHTIG: Wenn du eine Tabelle erkennst, formatiere sie als saubere Markdown-Tabelle und umschließe sie ZWINGEND mit den Tags <table_block> und </table_block>. "
-                "Gib NUR das bereinigte Markdown zurück. Keine Einleitung, keine Kommentare."
+                "Du bist ein präziser, domain-neutraler OCR-Korrektor und Layout-Analyst. "
+                "Prüfe Lesereihenfolge, Tabellen, Absätze und Formatierungen kritisch am Seitenbild. "
+                "Korrigiere nur bildlich belegte Fehler und ergänze nur tatsächlich Sichtbares. "
+                "Erfinde oder glätte keine Namen, Zahlen, Daten, Beträge, Codes oder Aussagen. "
+                "Umschließe erkannte Tabellen mit <table_block> und </table_block>. "
+                "Gib nur das korrigierte Markdown zurück."
             ),
             "fusion": (
-                "Du bist ein KI-Assistent zur medizinischen Dokumentenverarbeitung. "
-                "Erstelle aus den bereitgestellten Texten für diese EINE Seite einen fehlerfreien, flüssigen Fließtext. "
-                "Das 'Bereinigte Zwischen-Markdown' enthält die geprüfte Layout-Struktur und den Text. Der 'OCR Rohtext' dient als Absicherung für eventuelle Auslassungen. "
-                "Achte extrem penibel auf deutsche Umlaute (ä, ö, ü) und das Eszett (ß). "
-                "SPRACH-LOGIK: Die Standard-Ausgabe ist DEUTSCH. Achte penibel auf korrekte deutsche Umlautschreibweise. "
-                "AUSNAHME: Wenn du im bereitgestellten Quelltext eindeutig eine andere Sprache (z. B. Englisch) erkennst, passe die Zielsprache automatisch an diese an. "
-                "ÜBERGANGS-KONTEXT: Falls der Kontext der vorherigen Seite bereitgestellt wurde, nutze ihn AUSSCHLIESSLICH, um abgebrochene Sätze am Seitenübergang logisch, grammatikalisch korrekt und nahtlos fortzuführen. Gib den Text der vorherigen Seite unter keinen Umständen erneut aus! "
-                "Formatierung: Behalte Überschriften, Listen, Tabellen und Textauszeichnungen (Fett, Kursiv) so getreu wie möglich bei. "
-                "TABELLEN-SCHUTZ: Falls im Quelltext Blöcke mit <table_block> und </table_block> umschlossen sind, musst du diese Blöcke und deren gesamten Inhalt ABSOLUT UNVERÄNDERT übernehmen! Ändere kein einziges Zeichen, keine Pipes und keine Ausrichtungen innerhalb dieser Tags. "
-                "Gib NUR den finalen korrigierten Text für diese Seite zurück. Schreibe absolut keine Einleitung, Erklärung oder Metakommentare."
+                "Du verarbeitest beliebige Dokumentarten wort- und beleggetreu. "
+                "Führe Vision-Markdown, OCR-Sidecar und optionale OCR-Quellen für genau eine Seite zusammen. "
+                "Bewahre Dokumentensprache, Lesereihenfolge, Namen, Zahlen, Daten, Beträge und Codes exakt. "
+                "Erfinde nichts und markiere nicht auflösbare Widersprüche als [UNSICHER]. "
+                "Nutze vorherigen Seitenkontext nur für echte Satzübergänge und wiederhole ihn nicht. "
+                "Blöcke <table_block>...</table_block> bleiben unverändert. "
+                "Gib nur den finalen Seitentext zurück."
             ),
             "analysis": (
-                "Du bist ein medizinischer Archivar. Extrahiere aus dem Text:\n"
-                "1. date: Ein Datum im Format dd-mm-yyyy (aus dem Dokument, sonst das heutige)\n"
-                "2. title: Einen passenden kurzen Titel (keine Leerzeichen, nutze Unterstriche)\n"
-                "3. document_type: Den Dokumententyp (z.B. Arztbrief, Rechnung, Befund)\n"
-                "4. tags: 3-5 relevante Stichworte (kommagetrennt)\n"
-                "Antworte EXAKT im JSON Format: {\"date\": \"...\", \"title\": \"...\", \"document_type\": \"...\", \"tags\": \"...\"}"
+                "Du bist ein professioneller, domain-neutraler Dokumentenarchivar. "
+                "Extrahiere ausschließlich im Dokument belegte Angaben; fehlende oder widersprüchliche Werte bleiben null. "
+                "Ersetze ein fehlendes Dokumentdatum niemals durch das heutige Datum. "
+                "Antworte nur als JSON mit document_date (YYYY-MM-DD|null), title, document_type, "
+                "tags (Liste kontrollierter Stichwörter), issuer, recipient, owner, language, reference_ids, "
+                "period, amount, currency, field_confidence und evidence. "
+                "Belegzitate müssen wortgetreu aus der Eingabe stammen."
             ),
             "image_description": (
                 "Du bist ein präzises Vision-Modell zur Bildbeschreibung. "
@@ -63,20 +70,17 @@ class SettingsManager:
         self.settings = self.load()
 
     def _defaults(self) -> dict:
+        model_defaults = default_recommendation().as_settings_models()
         return {
             "base_dir": "C:\\OCR_Workdir",
             "additional_consume_dirs": [],
             "output_format": "PDF und DOCX",
             "docx_mode": "Lesbare DOCX",
-            "models": {
-                "vision": "qwen3-vl:30b-a3b-instruct-q4_K_M",
-                "fusion": "qwen3.6:27b",
-                "analysis": "qwen3.6:27b",
-                "glm_ocr": "glm-ocr:bf16",
-            },
+            "models": model_defaults,
             "think_fusion": False,
             "think_analysis": False,
             "organize_enabled": True,
+            "confirm_sorting_each_document": False,
             "gdrive_enabled": False,
             "privacy_mode": "standard",
             "redact_cloud_inputs": False,
@@ -91,6 +95,7 @@ class SettingsManager:
             "synology_base_url": "",
             "synology_username": "",
             "synology_password": "",
+            "synology_password_storage": "credential_manager",
             "synology_root_path": "",
             "synology_upload_pdf": True,
             "synology_upload_docx": False,
@@ -98,7 +103,10 @@ class SettingsManager:
             "unload_models_enabled": True,
             "system_tray_enabled": True,
             "review_before_save": False,
-            "large_pdf_reduced": True,
+            "large_pdf_reduced": False,
+            "large_pdf_page_limit": 20,
+            "ocr_languages": "deu+eng",
+            "ocr_mode": "auto",
             "onboarding_completed": False,
             "force_pipeline": False,
             "debug_artifacts_enabled": True,
@@ -108,22 +116,89 @@ class SettingsManager:
 
     def _apply_defaults(self, data: dict) -> dict:
         defaults = self._defaults()
-        normalized = {**defaults, **(data or {})}
+        source = data or {}
+        try:
+            source_prompt_version = int(source.get("prompt_version") or 1)
+        except (TypeError, ValueError):
+            source_prompt_version = 1
+        normalized = {**defaults, **source}
 
-        normalized.setdefault("models", {})
+        normalized["models"] = dict(normalized.get("models") or {})
         for key, value in defaults["models"].items():
             normalized["models"].setdefault(key, value)
 
-        normalized.setdefault("prompts", {})
+        normalized["prompts"] = dict(normalized.get("prompts") or {})
         for key, value in self.default_prompts.items():
             if key not in normalized["prompts"] or not normalized["prompts"][key]:
                 normalized["prompts"][key] = value
+
+        if source_prompt_version < self.CURRENT_PROMPT_VERSION:
+            normalized["prompts"] = self._migrate_unsafe_legacy_prompts(normalized["prompts"])
+            normalized["prompt_version"] = self.CURRENT_PROMPT_VERSION
 
         normalized["prompt_version"] = int(normalized.get("prompt_version") or self.CURRENT_PROMPT_VERSION)
         normalized["gdrive_token_path"] = normalize_token_path(normalized.get("gdrive_token_path"))
         normalized["gdrive_credentials_path"] = normalize_credentials_path(normalized.get("gdrive_credentials_path"))
         normalized["additional_consume_dirs"] = self._normalize_path_list(normalized.get("additional_consume_dirs"))
+        normalized["large_pdf_page_limit"] = self._normalize_int(
+            normalized.get("large_pdf_page_limit"),
+            default=20,
+            minimum=1,
+            maximum=1000,
+        )
+        try:
+            normalized["ocr_languages"] = "+".join(
+                normalize_ocr_languages(normalized.get("ocr_languages") or "deu+eng")
+            )
+        except ValueError:
+            normalized["ocr_languages"] = "deu+eng"
+        try:
+            normalized["ocr_mode"] = normalize_ocr_mode(normalized.get("ocr_mode"))
+        except ValueError:
+            normalized["ocr_mode"] = "auto"
+        normalized["synology_password"] = self._resolve_synology_password(normalized.get("synology_password"))
         return normalized
+
+    def _migrate_unsafe_legacy_prompts(self, prompts: dict) -> dict:
+        """Replace only recognisable historic defaults, preserving real custom prompts."""
+        migrated = dict(prompts or {})
+        unsafe_markers = {
+            "vision": (
+                "medizinischer ocr-korrektor",
+                "korrigiere fehler, ergänze fehlendes",
+            ),
+            "fusion": (
+                "medizinischen dokumentenverarbeitung",
+                "fehlerfreien, flüssigen fließtext",
+                "standard-ausgabe ist deutsch",
+            ),
+            "analysis": (
+                "medizinischer archivar",
+                "sonst das heutige",
+                "sonst heute",
+                "tags: 3-5",
+            ),
+        }
+        for task, markers in unsafe_markers.items():
+            current = str(migrated.get(task) or "")
+            folded = current.casefold()
+            if any(marker in folded for marker in markers):
+                migrated[task] = self.default_prompts[task]
+        return migrated
+
+    def _resolve_synology_password(self, value) -> str:
+        if not value:
+            return ""
+        if is_secret_ref(value):
+            return load_secret(value)
+        return str(value)
+
+    def _normalize_int(self, value, *, default: int, minimum: int, maximum: int) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return max(minimum, min(parsed, maximum))
 
     def _normalize_path_list(self, value) -> list[str]:
         if value is None:
@@ -186,7 +261,7 @@ class SettingsManager:
 
             if self.settings_file.exists():
                 backup = self.backup_path()
-                shutil.copy2(self.settings_file, backup)
+                self._write_sanitized_backup(backup)
                 harden_private_file(backup)
 
             os.replace(temp_path, self.settings_file)
@@ -194,6 +269,35 @@ class SettingsManager:
         except Exception:
             self._remove_temp_file(temp_path)
             raise
+
+    def _write_sanitized_backup(self, backup: Path) -> None:
+        current = self._load_json_file(self.settings_file)
+        if current is not None:
+            backup.write_text(
+                json.dumps(self._settings_for_disk(current), indent=4, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            return
+        shutil.copy2(self.settings_file, backup)
+
+    def _settings_for_disk(self, settings: dict) -> dict:
+        disk_settings = dict(settings or {})
+        password = str(disk_settings.get("synology_password") or "")
+        if password:
+            if is_secret_ref(password):
+                disk_settings["synology_password_storage"] = "credential_manager"
+            else:
+                stored_ref = store_secret(SYNOLOGY_PASSWORD_NAME, password)
+                if stored_ref:
+                    disk_settings["synology_password"] = stored_ref
+                    disk_settings["synology_password_storage"] = "credential_manager"
+                else:
+                    disk_settings["synology_password_storage"] = "settings_plaintext"
+        else:
+            delete_secret(SYNOLOGY_PASSWORD_NAME)
+            disk_settings["synology_password"] = ""
+            disk_settings["synology_password_storage"] = "none"
+        return disk_settings
 
     def load(self) -> dict:
         if self.settings_file.exists():
@@ -222,7 +326,7 @@ class SettingsManager:
         settings = self._apply_defaults(settings)
         self.validate(settings)
         try:
-            self._write_settings_atomically(settings)
+            self._write_settings_atomically(self._settings_for_disk(settings))
             self.settings = settings
         except Exception as e:
             raise RuntimeError(f"Konnte Einstellungen nicht speichern: {e}")
@@ -282,6 +386,25 @@ class SettingsManager:
         if privacy_mode not in valid_privacy_modes:
             raise ValueError(f"Ungültiger Datenschutzmodus: {privacy_mode}. Erlaubt sind: {valid_privacy_modes}")
 
+        try:
+            page_limit = int(settings.get("large_pdf_page_limit", 20))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("large_pdf_page_limit muss eine ganze Zahl sein.") from exc
+        if not 1 <= page_limit <= 1000:
+            raise ValueError("large_pdf_page_limit muss zwischen 1 und 1000 liegen.")
+        settings["large_pdf_page_limit"] = page_limit
+
+        try:
+            settings["ocr_languages"] = "+".join(
+                normalize_ocr_languages(settings.get("ocr_languages"))
+            )
+        except ValueError as exc:
+            raise ValueError(f"Ungültige OCR-Sprachen: {exc}") from exc
+        try:
+            settings["ocr_mode"] = normalize_ocr_mode(settings.get("ocr_mode"))
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+
         models = settings.get("models", {})
         for key in ["vision", "fusion", "analysis", "glm_ocr"]:
             if key not in models:
@@ -291,6 +414,7 @@ class SettingsManager:
 
         bool_fields = [
             ("organize_enabled", True),
+            ("confirm_sorting_each_document", False),
             ("gdrive_enabled", False),
             ("save_docx_enabled", True),
             ("save_json_enabled", True),
@@ -305,7 +429,7 @@ class SettingsManager:
             ("system_tray_enabled", True),
             ("review_before_save", False),
             ("redact_cloud_inputs", False),
-            ("large_pdf_reduced", True),
+            ("large_pdf_reduced", False),
             ("onboarding_completed", False),
             ("think_fusion", False),
             ("think_analysis", False),
@@ -332,6 +456,10 @@ class SettingsManager:
                 settings[key] = ""
             elif not isinstance(value, str):
                 raise ValueError(f"{key} muss ein String sein.")
+
+        storage = settings.get("synology_password_storage", "credential_manager")
+        if storage not in {"credential_manager", "settings_plaintext", "none"}:
+            raise ValueError("synology_password_storage hat einen ungueltigen Wert.")
 
         prompts = settings.get("prompts", {})
         if not isinstance(prompts, dict):

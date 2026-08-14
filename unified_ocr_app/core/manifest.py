@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,7 @@ class JobManifest:
                 "sha256": sha256_file(source_path),
             },
             "outputs": {},
+            "output_integrity": {},
             "stages": {},
             "metadata": {},
             "drive": {"enabled": False, "uploads": []},
@@ -80,10 +82,33 @@ class JobManifest:
             key: str(value) if value else None
             for key, value in (outputs or {}).items()
         }
+        integrity = {}
+        for key, value in (outputs or {}).items():
+            if not value:
+                integrity[key] = None
+                continue
+            path = Path(value)
+            integrity[key] = {
+                "path": str(path),
+                "exists": path.is_file(),
+                "size_bytes": path.stat().st_size if path.is_file() else None,
+                "sha256": sha256_file(path) if path.is_file() else None,
+            }
+        self.data["output_integrity"] = integrity
         self.write()
 
     def record_metadata(self, metadata: dict[str, Any]):
         self.data["metadata"] = _path_value(metadata or {})
+        self.write()
+
+    def record_review(self, review: dict[str, Any] | None):
+        """Persist the effective human/quality review decision for this job."""
+        self.data["review"] = _path_value(review or {})
+        self.write()
+
+    def record_quality(self, quality: dict[str, Any] | None):
+        """Persist the effective quality gate, not just a stage warning."""
+        self.data["quality"] = _path_value(quality or {})
         self.write()
 
     def record_source_context(self, *, input_dir: Path | str | None = None, input_profile: str | None = None):
@@ -91,6 +116,12 @@ class JobManifest:
             self.data["source"]["input_dir"] = str(input_dir)
         if input_profile:
             self.data["source"]["input_profile"] = str(input_profile)
+        self.write()
+
+    def record_original_archive(self, original_path: Path | str):
+        path = Path(original_path)
+        self.data["source"]["original_path"] = str(path)
+        self.data["source"]["archived_sha256"] = sha256_file(path) if path.is_file() else None
         self.write()
 
     def record_drive_uploads(self, *, enabled: bool, uploads: list[dict[str, Any]] | None):
@@ -116,6 +147,7 @@ class JobManifest:
 
     def finalize(self, status: str, *, error: str | None = None):
         self.data["status"] = status
+        self.data["finalized_at"] = _now_iso()
         if error:
             self.data["error"] = error
         self.write()
@@ -124,10 +156,26 @@ class JobManifest:
         destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         self.write()
-        destination.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
+        self._write_json_atomic(destination)
         return destination
 
     def write(self):
         self.data["updated_at"] = _now_iso()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
+        self._write_json_atomic(self.path)
+
+    def _write_json_atomic(self, destination: Path):
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}.{self.data['job_id']}.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(self.data, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.replace(temporary, destination)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass

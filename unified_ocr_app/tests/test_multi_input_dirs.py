@@ -1,11 +1,13 @@
 import json
+import os
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.config import AppConfig
+from core.config import AppConfig, setup_paths
+from core.file_types import SUPPORTED_INPUT_SUFFIXES
 from core.settings import SettingsManager
 from core.watcher import DirectoryWatcher
 
@@ -122,3 +124,25 @@ def test_watcher_queues_files_from_additional_input_dir(tmp_path):
 
     assert source in watcher.seen_files
     assert watcher.queue.get_nowait() == source
+
+
+def test_supported_input_suffixes_include_common_photo_and_scan_formats():
+    expected = {
+        ".png", ".jpg", ".jpeg", ".jpe", ".jfif",
+        ".heic", ".heif", ".tif", ".tiff", ".bmp", ".webp",
+    }
+
+    assert expected.issubset(SUPPORTED_INPUT_SUFFIXES)
+
+
+def test_setup_paths_adds_windowsapps_for_winget_alias(tmp_path, monkeypatch):
+    windows_apps = tmp_path / "Microsoft" / "WindowsApps"
+    windows_apps.mkdir(parents=True)
+    (windows_apps / "winget.exe").write_text("", encoding="utf-8")
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setenv("PATH", "")
+
+    setup_paths()
+
+    assert str(windows_apps).lower() in [part.lower() for part in os.environ["PATH"].split(";")]

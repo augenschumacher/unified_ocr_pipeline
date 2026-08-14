@@ -103,7 +103,9 @@ def test_process_file_uses_document_exporter_returned_paths_for_gdrive():
         orch._stage_extract_pages = MagicMock(return_value=([], {}))
         orch._stage_fusion = MagicMock(return_value={1: "fused text"})
         orch._stage_quality = MagicMock(return_value=("fused text", {"warnings": []}))
-        orch._stage_analysis = MagicMock(return_value=({}, "final_name"))
+        # Keep this integration test focused on exported-path propagation.
+        # A supported title satisfies the independent metadata-evidence gate.
+        orch._stage_analysis = MagicMock(return_value=({"title": "fused text"}, "final_name"))
         orch._stage_export = MagicMock(return_value={
             "pdf": exported_pdf,
             "docx": exported_docx,
@@ -114,9 +116,44 @@ def test_process_file_uses_document_exporter_returned_paths_for_gdrive():
 
         source = root / "input.pdf"
         source.write_text("input", encoding="utf-8")
-        orch.process_file(source)
+        outcome = orch.process_file(source)
 
         upload_kwargs = orch._stage_gdrive_upload.call_args.kwargs
         assert upload_kwargs["pdf_file"] == exported_pdf
         assert upload_kwargs["docx_file"] == exported_docx
         assert upload_kwargs["json_file"] == exported_json
+
+
+def test_process_file_does_not_overwrite_existing_original_or_error_files():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        config = AppConfig(root)
+        config.ensure_directories()
+        (config.original_dir / "input.pdf").write_text("existing original", encoding="utf-8")
+        (config.error_dir / "input_001.pdf").write_text("existing error", encoding="utf-8")
+        source = root / "input.pdf"
+        source.write_text("new input", encoding="utf-8")
+
+        llm = MagicMock()
+        llm.vision_model = "Keins"
+        llm.glm_ocr_model = "Keins"
+        llm.fusion_model = "Keins"
+        llm.analysis_model = "Keins"
+
+        orch = PipelineOrchestrator(config=config, llm_client=llm, organize_enabled=False)
+        orch._stage_prepare = MagicMock(side_effect=RuntimeError("forced failure"))
+
+        outcome = orch.process_file(source)
+
+        assert (config.original_dir / "input.pdf").read_text(encoding="utf-8") == "existing original"
+        assert (config.error_dir / "input_001.pdf").read_text(encoding="utf-8") == "existing error"
+        job_evidence = [path for path in config.error_dir.iterdir() if path.is_dir()]
+        assert len(job_evidence) == 1
+        preserved_inputs = list(job_evidence[0].glob("input_001*.pdf"))
+        assert len(preserved_inputs) == 1
+        assert preserved_inputs[0].read_text(encoding="utf-8") == "new input"
+        assert (job_evidence[0] / "job_manifest.json").is_file()
+        assert (job_evidence[0] / "debug_report.json").is_file()
+        assert not source.exists()
+        assert outcome["status"] == "failed"
+        assert "forced failure" in outcome["error"]

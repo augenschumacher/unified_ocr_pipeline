@@ -1,6 +1,5 @@
 import argparse
 import sys
-import shutil
 import logging
 from pathlib import Path
 
@@ -10,6 +9,7 @@ sys.path.insert(0, str(root))
 sys.path.insert(0, str(root / "unified_ocr_app"))
 
 from core.config import AppConfig, setup_paths
+from core.input_files import collect_cli_inputs, stage_input_file, supported_suffixes_text
 from core.settings import SettingsManager
 from core.llm import LLMClient
 from core.pipeline import PipelineOrchestrator
@@ -23,28 +23,51 @@ logging.basicConfig(
 logger = logging.getLogger("UnifiedOCR")
 
 
-def run_cli(file_path: str = None, dir_path: str = None, force: bool = False, base_dir_override: str = None):
+def run_cli(
+    file_path: str = None,
+    dir_path: str = None,
+    force: bool = False,
+    base_dir_override: str = None,
+    move_source: bool = False,
+):
     """
     Führt die OCR- und LLM-Pipeline headless über das Terminal aus.
     """
     setup_paths()
-    
+
     # Einstellungen laden
     settings_manager = SettingsManager()
     settings = settings_manager.load()
-    
+
     base_dir = base_dir_override or settings.get("base_dir", "C:\\OCR_Workdir")
     logger.info(f"Verwende Basis-Verzeichnis: {base_dir}")
     
-    config = AppConfig(base_dir)
+    config = AppConfig(
+        base_dir,
+        additional_consume_dirs=settings.get("additional_consume_dirs", []),
+        large_pdf_page_limit=settings.get("large_pdf_page_limit", 20),
+    )
     config.ensure_directories()
     
+    try:
+        input_files = collect_cli_inputs(file_path=file_path, dir_path=dir_path)
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        logger.error(str(exc))
+        sys.exit(1)
+
+    if dir_path and not input_files:
+        logger.info(
+            "Keine verarbeitbaren Dokumente im angegebenen Ordner gefunden. "
+            f"Unterstuetzte Dateitypen: {supported_suffixes_text()}."
+        )
+        return
+
     # LLM-Modelle aus settings.json laden
     models = settings.get("models", {})
     prompts = settings.get("prompts", {})
     unload_models = settings.get("unload_models_enabled", True)
     keep_alive = "0" if unload_models else "15m"
-    
+
     # Client instanziieren (mit force_pipeline Übergabe für Cache-Bypass)
     llm_client = LLMClient(
         vision_model=models.get("vision"),
@@ -57,7 +80,8 @@ def run_cli(file_path: str = None, dir_path: str = None, force: bool = False, ba
         think_analysis=settings.get("think_analysis", False),
         keep_alive=keep_alive,
         prompt_version=settings.get("prompt_version", 1),
-        force_pipeline=force
+        force_pipeline=force,
+        redact_cloud_inputs=settings.get("redact_cloud_inputs", False),
     )
     
     # Orchestrator aufbauen
@@ -76,39 +100,83 @@ def run_cli(file_path: str = None, dir_path: str = None, force: bool = False, ba
         gdrive_upload_pdf=settings.get("gdrive_upload_pdf", True),
         gdrive_upload_docx=settings.get("gdrive_upload_docx", False),
         gdrive_upload_json=settings.get("gdrive_upload_json", False),
+        synology_enabled=settings.get("synology_enabled", False),
+        synology_base_url=settings.get("synology_base_url", ""),
+        synology_username=settings.get("synology_username", ""),
+        synology_password=settings.get("synology_password", ""),
+        synology_root_path=settings.get("synology_root_path", ""),
+        synology_upload_pdf=settings.get("synology_upload_pdf", True),
+        synology_upload_docx=settings.get("synology_upload_docx", False),
+        synology_upload_json=settings.get("synology_upload_json", False),
         review_before_save=False,  # Im CLI-Modus immer unüberwacht verarbeiten
-        large_pdf_reduced=settings.get("large_pdf_reduced", True)
+        large_pdf_reduced=settings.get("large_pdf_reduced", False),
+        privacy_mode=settings.get("privacy_mode", "standard"),
+        debug_artifacts_enabled=settings.get("debug_artifacts_enabled", True),
+        ocr_languages=settings.get("ocr_languages", "deu+eng"),
+        ocr_mode=settings.get("ocr_mode", "auto"),
     )
     
     # Verarbeitung starten
     if file_path:
-        p = Path(file_path)
-        if not p.exists():
-            logger.error(f"Eingabedatei '{file_path}' existiert nicht.")
-            sys.exit(1)
-        logger.info(f"Starte Verarbeitung für Einzeldatei: {p.name}")
-        orchestrator.process_file(p)
-    elif dir_path:
-        d = Path(dir_path)
-        if not d.exists() or not d.is_dir():
-            logger.error(f"Eingabeverzeichnis '{dir_path}' existiert nicht.")
-            sys.exit(1)
-        
-        # Erlaubte Dateitypen filtern
-        allowed_exts = [".pdf", ".png", ".jpg", ".jpeg", ".heic", ".docx", ".odt", ".doc", ".odoc"]
-        candidates = [f for f in d.iterdir() if f.is_file() and f.suffix.lower() in allowed_exts]
-        
-        if not candidates:
-            logger.info("Keine verarbeitbaren Dokumente im angegebenen Ordner gefunden.")
-            return
-            
-        logger.info(f"Gefunden: {len(candidates)} Dokumente zur Verarbeitung.")
-        for idx, f in enumerate(candidates, 1):
-            logger.info(f"\n[{idx}/{len(candidates)}] Verarbeite Datei: {f.name}")
-            try:
-                orchestrator.process_file(f)
-            except Exception as e:
-                logger.error(f"Fehler bei der Verarbeitung von {f.name}: {e}")
+        logger.info(f"Starte Verarbeitung für Einzeldatei: {input_files[0].name}")
+
+    if dir_path:
+        logger.info(f"Gefunden: {len(input_files)} Dokumente zur Verarbeitung.")
+
+    processing_inputs = input_files if move_source else [stage_input_file(path, config) for path in input_files]
+    if not move_source:
+        logger.info("Quelldateien werden sicher in den Eingang kopiert; die angegebenen Originalpfade bleiben unverändert.")
+
+    outcomes = []
+    for idx, input_file in enumerate(processing_inputs, 1):
+        if dir_path:
+            logger.info(f"\n[{idx}/{len(processing_inputs)}] Verarbeite Datei: {input_file.name}")
+        try:
+            outcome = orchestrator.process_file(input_file)
+            outcomes.append(outcome if isinstance(outcome, dict) else {"status": "completed"})
+        except Exception as e:
+            outcomes.append({"status": "failed", "source_name": input_file.name, "error": str(e)})
+            logger.error(f"Fehler bei der Verarbeitung von {input_file.name}: {e}")
+
+    if getattr(orchestrator, "deferred_organizations", None):
+        orchestrator.process_deferred_organizations()
+    failed = sum(1 for outcome in outcomes if outcome.get("status") == "failed")
+    try:
+        from core.local_store import LocalStore
+
+        open_job_ids = {
+            str(item.get("job_id") or "")
+            for item in LocalStore(config).list_recoverable_work(limit=1000)
+        }
+        review_required = sum(
+            1
+            for outcome in outcomes
+            if (
+                outcome.get("review_required")
+                and (
+                    not outcome.get("job_id")
+                    or str(outcome.get("job_id")) in open_job_ids
+                )
+            )
+        )
+    except Exception:
+        review_required = sum(1 for outcome in outcomes if outcome.get("review_required"))
+    completed = max(0, len(processing_inputs) - failed - review_required)
+    result = {
+        "attempted": len(processing_inputs),
+        "completed": completed,
+        "review_required": review_required,
+        "failed": failed,
+        "succeeded": completed,
+        "outcomes": outcomes,
+    }
+    logger.info(
+        "Batch abgeschlossen: %s vollständig, %s zur Prüfung, %s fehlgeschlagen.",
+        completed,
+        review_required,
+        failed,
+    )
+    return result
 
 
 def main():
@@ -120,6 +188,11 @@ def main():
         "--file", "-f",
         type=str,
         help="Pfad zu einer PDF-, Bild- oder Office-Datei zur unmittelbaren Verarbeitung."
+    )
+    parser.add_argument(
+        "--move-source",
+        action="store_true",
+        help="Verschiebt übergebene Quelldateien in das Archiv. Standardmäßig werden sie sicher kopiert.",
     )
     parser.add_argument(
         "--dir", "-d",
@@ -142,7 +215,17 @@ def main():
     # Falls Datei oder Ordner übergeben wurden, führe die CLI-Pipeline aus
     if args.file or args.dir:
         try:
-            run_cli(file_path=args.file, dir_path=args.dir, force=args.force, base_dir_override=args.base_dir)
+            result = run_cli(
+                file_path=args.file,
+                dir_path=args.dir,
+                force=args.force,
+                base_dir_override=args.base_dir,
+                move_source=args.move_source,
+            )
+            if result and result.get("failed"):
+                sys.exit(2)
+            if result and result.get("review_required"):
+                sys.exit(3)
         except KeyboardInterrupt:
             logger.info("Verarbeitung durch Benutzer abgebrochen.")
             sys.exit(0)

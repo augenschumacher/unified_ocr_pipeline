@@ -93,6 +93,7 @@ SKIP_DIRS = {
     "build",
     "dist",
     "env",
+    "release",
     "venv",
 }
 
@@ -117,6 +118,19 @@ class CheckResult:
 
 def _as_posix(path: Path) -> str:
     return path.as_posix()
+
+
+def _resolve_project_root(root: str | Path) -> Path:
+    root_path = Path(root).resolve()
+    if (root_path / "unified_ocr_app" / "pyproject.toml").exists():
+        return root_path
+    if (
+        root_path.name == "unified_ocr_app"
+        and (root_path / "pyproject.toml").exists()
+        and (root_path.parent / "unified_ocr_app") == root_path
+    ):
+        return root_path.parent
+    return root_path
 
 
 def _iter_files(root: Path) -> Iterable[Path]:
@@ -323,7 +337,7 @@ def check_secret_markers(root: Path) -> CheckResult:
 
 
 def run_release_check(root: str | Path = ".") -> dict:
-    root_path = Path(root).resolve()
+    root_path = _resolve_project_root(root)
     checks = [
         check_required_files(root_path),
         check_dependency_metadata(root_path),

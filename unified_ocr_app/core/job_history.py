@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +36,46 @@ class JobHistory:
         safe_record.setdefault("timestamp_utc", _now())
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(json.dumps(safe_record, ensure_ascii=False, default=str) + "\n")
+
+    def append_once(self, record: dict, *, idempotency_key: str) -> bool:
+        """Append one durable history event at most once across processes."""
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise ValueError("idempotency_key darf nicht leer sein.")
+        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        descriptor = None
+        for _attempt in range(200):
+            try:
+                descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                time.sleep(0.01)
+        if descriptor is None:
+            raise TimeoutError("Job-History ist durch einen anderen Prozess gesperrt.")
+        try:
+            os.close(descriptor)
+            descriptor = None
+            if self.path.is_file():
+                with self.path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        try:
+                            current = json.loads(line)
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        if current.get("idempotency_key") == key:
+                            return False
+            safe_record = dict(record)
+            safe_record["idempotency_key"] = key
+            safe_record.setdefault("timestamp_utc", _now())
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(safe_record, ensure_ascii=False, default=str) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            return True
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            lock_path.unlink(missing_ok=True)
 
     def start(self, source_path: Path) -> str:
         job_id = uuid.uuid4().hex

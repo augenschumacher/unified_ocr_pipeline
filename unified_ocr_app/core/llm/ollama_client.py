@@ -10,6 +10,7 @@ Verantwortlichkeiten:
 """
 
 import json
+import os
 import re
 import base64
 import time
@@ -29,6 +30,21 @@ except ImportError:
     litellm = None
 
 logger = logging.getLogger("UnifiedOCR")
+
+
+def _timeout_from_environment(name: str, default: float) -> float:
+    """Read a timeout override; 0 or negative disables the limit."""
+    try:
+        return float(os.environ.get(name, "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+# Ohne Zeitlimit blockiert ein haengender Antwort-Stream den globalen
+# Ollama-Lock unbegrenzt und damit die komplette Pipeline.  Der Wert ist
+# grosszuegig, damit auch grosse Vision-Modelle auf langsamer Hardware
+# durchlaufen.
+LLM_REQUEST_TIMEOUT_SECONDS = _timeout_from_environment("UNIFIED_OCR_LLM_TIMEOUT", 900.0)
 
 _OLLAMA_LOCK = threading.Lock()
 
@@ -160,7 +176,22 @@ class OllamaClient:
         else:
             iterator = response_generator
 
+        # Zweite Verteidigungslinie neben dem Request-Timeout: ein Modell, das
+        # endlos weiter Token liefert, darf den globalen Ollama-Lock nicht
+        # unbegrenzt halten.
+        stream_deadline = (
+            time.monotonic() + LLM_REQUEST_TIMEOUT_SECONDS
+            if LLM_REQUEST_TIMEOUT_SECONDS and LLM_REQUEST_TIMEOUT_SECONDS > 0
+            else None
+        )
+
         for chunk in iterator:
+            if stream_deadline is not None and time.monotonic() > stream_deadline:
+                self._log(
+                    f"    ⚠️ Antwort-Stream nach {LLM_REQUEST_TIMEOUT_SECONDS:.0f}s abgebrochen "
+                    "(Zeitlimit erreicht). Bisheriger Text wird verwendet."
+                )
+                break
             try:
                 token = ""
                 native_chunk = ""
@@ -170,7 +201,13 @@ class OllamaClient:
                     try:
                         chunk = json.loads(chunk.decode("utf-8"))
                     except Exception:
-                        pass
+                        # Ein unlesbarer Chunk bedeutet fehlenden Text im
+                        # Ergebnis; das darf nicht spurlos passieren.
+                        logger.debug(
+                            "Antwort-Chunk konnte nicht dekodiert werden (%d Bytes).",
+                            len(chunk),
+                            exc_info=True,
+                        )
 
                 # Token und reasoning_content / thinking aus Chunk extrahieren
                 if hasattr(chunk, "choices") and chunk.choices:
@@ -393,6 +430,8 @@ class OllamaClient:
             "stream": True,
             "max_tokens": max_tokens
         }
+        if LLM_REQUEST_TIMEOUT_SECONDS and LLM_REQUEST_TIMEOUT_SECONDS > 0:
+            completion_kwargs["timeout"] = LLM_REQUEST_TIMEOUT_SECONDS
         if api_base:
             completion_kwargs["api_base"] = api_base
         if api_key:

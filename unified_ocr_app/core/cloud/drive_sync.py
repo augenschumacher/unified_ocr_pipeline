@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.cloud.folder_registry import FolderRegistry
+from core.cloud.folder_registry import FolderRegistry, RegistryWriteError
 from core.cloud.gdrive_client import GoogleDriveClient
 
 
@@ -45,7 +45,21 @@ def sync_drive_folders(base_dir: Path, token_path: str, client: GoogleDriveClien
         conflicts.extend(result["conflicts"])
 
     registry.prune_drive_folder_map()
-    registry.save()
+    try:
+        registry.save()
+    except RegistryWriteError as exc:
+        if "zwischenzeitlich geändert" not in str(exc):
+            raise
+        # Merge only Drive IDs into the newest tree; a concurrently added local
+        # archive path must never disappear because this sync held a stale copy.
+        fresh = FolderRegistry(base_dir)
+        current_paths = set(fresh.get_known_paths())
+        for path, folder_id in registry.get_drive_folder_map().items():
+            if path in current_paths:
+                fresh.set_drive_folder_id(path, folder_id)
+        fresh.prune_drive_folder_map()
+        fresh.save()
+        registry = fresh
 
     return {
         "created": sorted(set(created), key=lambda p: (p.count("/"), p.casefold())),

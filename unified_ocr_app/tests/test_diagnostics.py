@@ -62,15 +62,20 @@ def test_process_file_writes_debug_report(mock_move, tmp_path):
     orch._stage_extract_pages = MagicMock(return_value=([], {}))
     orch._stage_fusion = MagicMock(return_value={1: "fused text"})
     orch._stage_quality = MagicMock(return_value=("fused text", {"warnings": []}))
-    orch._stage_analysis = MagicMock(return_value=({}, "final_name"))
+    # Keep the synthetic test metadata grounded so the production metadata
+    # evidence gate does not correctly stage this artifact-less mock for review.
+    orch._stage_analysis = MagicMock(return_value=({"title": "fused text"}, "final_name"))
     orch._stage_export = MagicMock(return_value={"pdf": None, "txt": None, "docx": None, "json": None})
 
     source = tmp_path / "input.pdf"
     source.write_text("input", encoding="utf-8")
     orch.process_file(source)
 
-    debug_report = config.final_dir / "begleitdateien" / "final_name_debug_report.json"
-    manifest = config.final_dir / "begleitdateien" / "final_name_job_manifest.json"
+    debug_reports = list((config.final_dir / "begleitdateien").glob("final_name_*_debug_report.json"))
+    manifests = list((config.final_dir / "begleitdateien").glob("final_name_*_job_manifest.json"))
+    assert len(debug_reports) == len(manifests) == 1
+    debug_report = debug_reports[0]
+    manifest = manifests[0]
     assert debug_report.exists()
     data = json.loads(debug_report.read_text(encoding="utf-8"))
     assert data["stages"]["ocrmypdf"]["payload"]["text_chars"] == 8

@@ -4,12 +4,12 @@ import threading
 import time
 from pathlib import Path
 
+from core.file_types import SUPPORTED_INPUT_SUFFIXES
 from core.pipeline import PipelineOrchestrator
 
 
 logger = logging.getLogger("UnifiedOCR")
 
-SUPPORTED_INPUT_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".heic", ".docx", ".odt", ".doc", ".odoc"}
 TEMPORARY_NAME_MARKERS = (".tmp", ".part", ".crdownload", ".download")
 
 
@@ -23,6 +23,7 @@ class DirectoryWatcher:
         self.seen_files = set()
         self.file_tracker = {}
         self.lock = threading.Lock()
+        self.current_file: Path | None = None
 
     def start(self):
         if self.is_running:
@@ -49,11 +50,33 @@ class DirectoryWatcher:
         self._watcher_thread = threading.Thread(target=self._watch_loop, daemon=True)
         self._watcher_thread.start()
 
-    def stop(self):
+    @property
+    def is_busy(self) -> bool:
+        with self.lock:
+            return self.current_file is not None
+
+    def stop(self, *, wait: bool = False, timeout: float | None = None):
+        """Stop accepting work and let the current document finish safely."""
         self.is_running = False
         self.orchestrator.log("Watchdog wird gestoppt...")
         logger.info("Watchdog wird gestoppt...")
         self.queue.put(None)
+        if wait:
+            self.wait_until_stopped(timeout=timeout)
+
+    def wait_until_stopped(self, timeout: float | None = None):
+        started = time.monotonic()
+        for thread in (self._watcher_thread, self._worker_thread):
+            if not thread or thread is threading.current_thread():
+                continue
+            remaining = None
+            if timeout is not None:
+                remaining = max(0.0, timeout - (time.monotonic() - started))
+            thread.join(remaining)
+        return not any(
+            thread and thread.is_alive()
+            for thread in (self._watcher_thread, self._worker_thread)
+        )
 
     def _consume_dirs(self) -> list[Path]:
         dirs = getattr(self.orchestrator.config, "consume_dirs", None)
@@ -153,12 +176,15 @@ class DirectoryWatcher:
 
                 try:
                     logger.info("Worker startet Verarbeitung fuer: %s", file_path.name)
+                    with self.lock:
+                        self.current_file = file_path
                     self.orchestrator.process_file(file_path)
                 except Exception as ex:
                     logger.exception("Worker-Fehler bei der Verarbeitung von %s", file_path.name)
                     self.orchestrator.log(f"Fehler bei {file_path.name}: {str(ex)}")
                 finally:
                     with self.lock:
+                        self.current_file = None
                         self.seen_files.discard(file_path)
                     self.queue.task_done()
 

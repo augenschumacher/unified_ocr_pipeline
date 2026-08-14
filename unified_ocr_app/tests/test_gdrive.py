@@ -94,16 +94,32 @@ def test_upload_file_new(mock_resolve, mock_get_service, mock_media):
     # Mock list: file doesn't exist
     mock_list = MagicMock()
     mock_service.files().list.return_value = mock_list
-    mock_list.execute.return_value = {"files": []}
+    mock_list.execute.side_effect = [
+        {"files": []},
+        {"files": [{"id": "new_file_id", "name": "rechnung.pdf"}]},
+    ]
     
     # Mock create
     mock_create = MagicMock()
     mock_service.files().create.return_value = mock_create
     mock_create.execute.return_value = {"id": "new_file_id"}
+    def created_metadata():
+        body = mock_service.files().create.call_args.kwargs["body"]
+        return {
+            "id": "new_file_id",
+            "name": "rechnung.pdf",
+            "parents": ["folder_id"],
+            "md5Checksum": GoogleDriveClient._md5_file(local_file),
+            "size": str(local_file.stat().st_size),
+            "mimeType": "application/pdf",
+            "trashed": False,
+            "appProperties": body["appProperties"],
+        }
     
     with tempfile.TemporaryDirectory() as tmpdir:
         local_file = Path(tmpdir) / "rechnung.pdf"
         local_file.write_text("dummy pdf", encoding="utf-8")
+        mock_service.files().get.return_value.execute.side_effect = created_metadata
         
         client = GoogleDriveClient()
         file_id = client.upload_file("dummy_token.json", str(local_file), "Laura/Schule")
@@ -111,11 +127,15 @@ def test_upload_file_new(mock_resolve, mock_get_service, mock_media):
         assert file_id == "new_file_id"
         mock_service.files().create.assert_called_once()
         mock_service.files().update.assert_not_called()
+        properties = mock_service.files().create.call_args.kwargs["body"]["appProperties"]
+        assert properties["unifiedOcrRole"] == "pdf"
+        assert properties["unifiedOcrMd5"] == GoogleDriveClient._md5_file(local_file)
+        assert properties["unifiedOcrPackage"]
 
 @patch("core.cloud.gdrive_client.MediaFileUpload")
 @patch("core.cloud.gdrive_client.GoogleDriveClient._get_service")
 @patch("core.cloud.gdrive_client.GoogleDriveClient._resolve_path_to_folder_id")
-def test_upload_file_update_existing(mock_resolve, mock_get_service, mock_media):
+def test_upload_file_creates_safe_conflict_copy_for_existing_unknown_content(mock_resolve, mock_get_service, mock_media):
     mock_service = MagicMock()
     mock_get_service.return_value = mock_service
     mock_resolve.return_value = "folder_id"
@@ -123,23 +143,40 @@ def test_upload_file_update_existing(mock_resolve, mock_get_service, mock_media)
     # Mock list: file exists with ID 'existing_file_id'
     mock_list = MagicMock()
     mock_service.files().list.return_value = mock_list
-    mock_list.execute.return_value = {"files": [{"id": "existing_file_id", "name": "rechnung.pdf"}]}
+    mock_list.execute.side_effect = [
+        {"files": [{"id": "existing_file_id", "name": "rechnung.pdf"}]},
+        {"files": []},
+        {"files": [{"id": "conflict_file_id", "name": "rechnung_conflict_001.pdf"}]},
+    ]
     
-    # Mock update
-    mock_update = MagicMock()
-    mock_service.files().update.return_value = mock_update
-    mock_update.execute.return_value = {"id": "existing_file_id"}
+    mock_create = MagicMock()
+    mock_service.files().create.return_value = mock_create
+    mock_create.execute.return_value = {"id": "conflict_file_id"}
     
     with tempfile.TemporaryDirectory() as tmpdir:
         local_file = Path(tmpdir) / "rechnung.pdf"
         local_file.write_text("dummy pdf", encoding="utf-8")
+        def created_metadata():
+            body = mock_service.files().create.call_args.kwargs["body"]
+            return {
+                "id": "conflict_file_id",
+                "name": "rechnung_conflict_001.pdf",
+                "parents": ["folder_id"],
+                "md5Checksum": GoogleDriveClient._md5_file(local_file),
+                "size": str(local_file.stat().st_size),
+                "mimeType": "application/pdf",
+                "trashed": False,
+                "appProperties": body["appProperties"],
+            }
+        mock_service.files().get.return_value.execute.side_effect = created_metadata
         
         client = GoogleDriveClient()
         file_id = client.upload_file("dummy_token.json", str(local_file), "Laura/Schule")
         
-        assert file_id == "existing_file_id"
-        mock_service.files().create.assert_not_called()
-        mock_service.files().update.assert_called_once()
+        assert file_id == "conflict_file_id"
+        mock_service.files().update.assert_not_called()
+        metadata = mock_service.files().create.call_args.kwargs["body"]
+        assert metadata["name"] == "rechnung_conflict_001.pdf"
 
 @patch("core.cloud.gdrive_client.Path.exists")
 @patch("core.cloud.gdrive_client.Path.unlink")
@@ -174,7 +211,7 @@ def test_ensure_folder_path_creates_and_returns_path_ids():
     }
 
 
-def test_ensure_folder_path_reports_duplicate_conflict():
+def test_ensure_folder_path_blocks_duplicate_conflict():
     mock_service = MagicMock()
     mock_list = MagicMock()
     mock_service.files().list.return_value = mock_list
@@ -186,8 +223,81 @@ def test_ensure_folder_path_reports_duplicate_conflict():
     }
 
     client = GoogleDriveClient()
-    result = client.ensure_folder_path(mock_service, "Jan")
+    with pytest.raises(RuntimeError, match="Mehrdeutige.*Jan"):
+        client.ensure_folder_path(mock_service, "Jan")
 
-    assert result["folder_id"] == "folder_1"
-    assert result["conflicts"]
-    assert result["conflicts"][0]["folder_ids"] == ["folder_1", "folder_2"]
+
+def test_stale_known_folder_id_blocks_instead_of_falling_back_by_name():
+    mock_service = MagicMock()
+    files_api = mock_service.files.return_value
+    files_api.get.return_value.execute.side_effect = [
+        {
+            "id": "jan_id",
+            "name": "Jan",
+            "parents": ["root-id"],
+            "trashed": False,
+            "mimeType": "application/vnd.google-apps.folder",
+        },
+        {"id": "root-id"},
+        {
+            "id": "wrong_child",
+            "name": "Gesundheit",
+            "parents": ["other_parent"],
+            "trashed": False,
+            "mimeType": "application/vnd.google-apps.folder",
+        },
+    ]
+    files_api.list.return_value.execute.return_value = {
+        "files": [{"id": "correct_child", "name": "Gesundheit", "parents": ["jan_id"]}]
+    }
+
+    with pytest.raises(RuntimeError, match="geschlossen blockiert.*wrong_child"):
+        GoogleDriveClient().ensure_folder_path(
+            mock_service,
+            "Jan/Gesundheit",
+            known_ids={"Jan": "jan_id", "Jan/Gesundheit": "wrong_child"},
+        )
+
+    # The stale registry mapping is not silently replaced by the first
+    # same-name folder returned from Drive.
+    files_api.create.assert_not_called()
+
+
+def test_missing_known_folder_id_blocks_before_name_lookup():
+    service = MagicMock()
+    files_api = service.files.return_value
+    files_api.get.return_value.execute.side_effect = RuntimeError("404")
+
+    with pytest.raises(RuntimeError, match="geschlossen blockiert.*gone-id"):
+        GoogleDriveClient().ensure_folder_path(
+            service,
+            "Archiv",
+            known_ids={"Archiv": "gone-id"},
+        )
+
+    files_api.list.assert_not_called()
+    files_api.create.assert_not_called()
+
+
+def test_known_top_level_folder_under_wrong_parent_is_blocked():
+    service = MagicMock()
+    files_api = service.files.return_value
+    files_api.get.return_value.execute.side_effect = [
+        {
+            "id": "archive-id",
+            "name": "Archiv",
+            "parents": ["foreign-parent"],
+            "trashed": False,
+            "mimeType": "application/vnd.google-apps.folder",
+        },
+        {"id": "actual-root-id"},
+    ]
+
+    with pytest.raises(RuntimeError, match="geschlossen blockiert.*archive-id"):
+        GoogleDriveClient().ensure_folder_path(
+            service,
+            "Archiv",
+            known_ids={"Archiv": "archive-id"},
+        )
+
+    files_api.list.assert_not_called()

@@ -83,7 +83,11 @@ def test_system_check_returns_structured_result(tmp_path):
 
     assert "python" in checks
     assert "commands" in checks
+    assert "optional_commands" in checks
+    assert "blocking_issues" in checks
     assert "Ordner:" in rendered
+    assert "Pflichtkomponenten:" in rendered
+    assert "Optionale Komponenten:" in rendered
 
 
 def test_system_check_accepts_ocrmypdf_python_module_when_command_missing():
@@ -96,3 +100,16 @@ def test_system_check_accepts_ocrmypdf_python_module_when_command_missing():
 
     assert status["ok"] is True
     assert status["message"] == "Python-Modul gefunden"
+
+
+def test_system_check_formats_remediation_for_missing_required_component(tmp_path):
+    with patch("core.system_check.shutil.which", return_value=None), \
+         patch("core.system_check.importlib.util.find_spec", return_value=None):
+        checks = run_system_check(tmp_path)
+
+    rendered = format_system_check(checks)
+
+    assert checks["ok"] is False
+    assert checks["blocking_issues"]
+    assert "Was zu tun ist:" in rendered
+    assert "Tesseract OCR" in rendered

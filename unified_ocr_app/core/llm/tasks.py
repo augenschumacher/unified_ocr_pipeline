@@ -12,15 +12,50 @@ HTTP-Kommunikation wird an OllamaClient.query() delegiert. Das Caching
 erfolgt über strukturierte CacheInput-Objekte mit SHA-256-basierten v2-Keys.
 """
 
-import json
 from .ollama_client import OllamaClient
 from core.cache import CacheInput, sha256_file, sha256_text
+from core.metadata import build_document_excerpt, empty_metadata, normalize_metadata, parse_metadata_response
 from core.privacy import is_external_model, redact_sensitive_text
 
 # Eingabelängenbegrenzung (Zeichen) – verhindert Context-Overflow
 _MAX_DOCLING_CHARS = 8_000
 _MAX_OCR_CHARS     = 6_000
 _MAX_PREV_CHARS    = 4_000
+_MAX_ANALYSIS_CHARS = 12_000
+
+
+def _domain_neutral_prompt(selected: str, default: str, *, task: str) -> str:
+    """Remove the former medical-only role while retaining user customisation."""
+    prompt = (selected or default).strip()
+    replacements = {
+        "medizinischer OCR-Korrektor": "praeziser OCR-Korrektor",
+        "medizinischen Dokumentenverarbeitung": "allgemeinen Dokumentenverarbeitung",
+        "medizinische Dokumentenverarbeitung": "allgemeine Dokumentenverarbeitung",
+        "medizinischer Archivar": "professioneller Dokumentenarchivar",
+    }
+    for old, new in replacements.items():
+        prompt = prompt.replace(old, new).replace(old.capitalize(), new.capitalize())
+
+    unsafe_legacy_markers = {
+        "vision": ("ergänze fehlendes",),
+        "fusion": (
+            "fehlerfreien, flüssigen fließtext",
+            "standard-ausgabe ist deutsch",
+        ),
+        "analysis": (
+            "sonst heute",
+            "sonst das heutige",
+            "tags: 3-5",
+            "tags:          3",
+        ),
+    }
+    if any(marker in prompt.casefold() for marker in unsafe_legacy_markers.get(task, ())):
+        return default
+
+    if task == "analysis":
+        if prompt != default:
+            return prompt + "\n\n" + default
+    return prompt
 
 
 class LLMClient(OllamaClient):
@@ -157,10 +192,11 @@ class LLMClient(OllamaClient):
             return ""
 
         default_sys = (
-            "Du bist ein medizinischer OCR-Korrektor und Layout-Analyst. "
+            "Du bist ein praeziser OCR-Korrektor und Layout-Analyst fuer beliebige Dokumentarten. "
             "Dir wird ein Bild einer Dokumentenseite und das vorläufige Markdown übergeben. "
-            "Prüfe Tabellenstrukturen, Absätze und Formatierungen kritisch anhand des Bildes. "
-            "Korrigiere Fehler, ergänze Fehlendes. "
+            "Prüfe Tabellenstrukturen, Lesereihenfolge, Absätze und Formatierungen kritisch anhand des Bildes. "
+            "Korrigiere nur bildlich belegte Fehler und ergänze nur tatsächlich Sichtbares. "
+            "Erfinde oder glätte keine Namen, Zahlen, Daten, Beträge, Codes oder Aussagen. "
             "WICHTIG: Erkannte Tabellen ZWINGEND mit <table_block>...</table_block> umschließen. "
             "Gib NUR das korrigierte Markdown zurück. Keine Einleitung, keine Kommentare."
         )
@@ -169,7 +205,9 @@ class LLMClient(OllamaClient):
             f"```markdown\n{page_markdown}\n```\n\n"
             "Prüfe und korrigiere anhand des beigefügten Bildes."
         )
-        system_prompt = self._get_prompt("vision", default_sys)
+        system_prompt = _domain_neutral_prompt(
+            self._get_prompt("vision", default_sys), default_sys, task="vision"
+        )
         cache_input = CacheInput(
             task="vision_review",
             system_prompt_hash=sha256_text(system_prompt),
@@ -241,18 +279,20 @@ class LLMClient(OllamaClient):
             )
         else:
             default_sys = (
-                "Du bist ein KI-Assistent für medizinische Dokumentenverarbeitung. "
+                "Du bist ein KI-Assistent für wortgetreue, allgemeine Dokumentenverarbeitung. "
                 "Dir liegen bis zu drei Quellen vor: Vision-Markdown (Hauptquelle), "
                 "GLM-OCR (Rohextraktion), OCR-Sidecar (Absicherung). "
-                "Erstelle einen fehlerfreien, flüssigen Fließtext für diese eine Seite. "
-                "Deutsch mit korrekten Umlauten (ä, ö, ü, ß). "
+                "Rekonstruiere den Inhalt dieser einen Seite quellennah; glätte, deute oder ergänze nichts. "
+                "Bewahre die erkannte Dokumentensprache sowie Namen, Zahlen, Daten, Beträge und Codes exakt. "
                 "Seitenkontext NUR für Übergänge nutzen – vorherige Seite nicht wiederholen! "
                 "Überschriften, Listen und Tabellen beibehalten. "
                 "<table_block>...</table_block> ABSOLUT UNVERÄNDERT übernehmen. "
                 "Nur den finalen Text zurückgeben. Keine Kommentare."
             )
 
-        system_prompt = self._get_prompt("fusion", default_sys)
+        system_prompt = _domain_neutral_prompt(
+            self._get_prompt("fusion", default_sys), default_sys, task="fusion"
+        )
         user_prompt = f"Rohdaten fuer Seite {page_num}:\n\n{combined}\n\nErstelle den finalen Text."
         cache_input = CacheInput(
             task="page_fusion",
@@ -292,39 +332,86 @@ class LLMClient(OllamaClient):
 
     def run_analysis(self, fused_text: str) -> dict:
         """
-        Extrahiert Datum, Titel, Dokumententyp und Tags als JSON-Dictionary.
-        Übergibt fused_text als raw_text-Caching-Schlüssel.
+        Extrahiert und validiert archivische Metadaten als Dictionary.
+
+        Fehlende Werte bleiben unbekannt. Der Dokumentauszug enthält deterministisch
+        Anfang, Mitte und Ende, damit Absender, Anlagen und Schlussbereiche nicht
+        systematisch unberücksichtigt bleiben.
         """
         if not self.analysis_model or self.analysis_model == "Keins":
             return {}
 
         default_sys = (
-            "Du bist ein medizinischer Archivar. Extrahiere aus dem Text:\n"
-            "1. date:          Datum im Format DD-MM-YYYY (aus Dokument, sonst heute)\n"
-            "2. title:         Kurztitel ohne Leerzeichen (Unterstriche statt Leerzeichen)\n"
-            "3. document_type: Dokumententyp (z.B. Arztbrief, Rechnung, Befund)\n"
-            "4. tags:          3–5 relevante Stichworte, kommagetrennt\n"
-            'Antwort AUSSCHLIESSLICH als JSON: {"date":"...","title":"...","document_type":"...","tags":"..."}'
+            "Du bist ein professioneller, domain-neutraler Dokumentenarchivar. "
+            "Extrahiere ausschließlich Angaben, die im Dokument belegt sind. "
+            "Erfinde nichts und leite keine Person nur aus einem Ordnernamen ab. "
+            "Wenn ein Wert fehlt oder widersprüchlich ist, verwende null beziehungsweise eine leere Liste. "
+            "Insbesondere darf ein fehlendes Dokumentdatum NIEMALS durch das heutige Datum ersetzt werden.\n\n"
+            "Antworte ausschließlich mit genau einem JSON-Objekt nach diesem Vertrag:\n"
+            "{\n"
+            '  "document_date": "YYYY-MM-DD oder null",\n'
+            '  "title": "kurzer menschenlesbarer Titel oder null",\n'
+            '  "document_type": "Dokumentart oder null",\n'
+            '  "tags": ["kontrolliertes Stichwort", "..."],\n'
+            '  "issuer": "Aussteller/Absender oder null",\n'
+            '  "recipient": "Empfänger/Adressat oder null",\n'
+            '  "owner": "eindeutig belegter Akteninhaber/Eigentümer oder null",\n'
+            '  "language": "ISO-639-Sprachcode oder null",\n'
+            '  "reference_ids": [{"type": "z.B. vertragsnummer", "value": "exakter Wert"}],\n'
+            '  "period": {"start": "YYYY-MM-DD oder null", "end": "YYYY-MM-DD oder null", "label": null},\n'
+            '  "amount": "Dezimalbetrag ohne Tausendertrennzeichen oder null",\n'
+            '  "currency": "ISO-4217-Code oder null",\n'
+            '  "field_confidence": {"document_date": 0.0, "title": 0.0},\n'
+            '  "evidence": {"document_date": [{"quote": "kurzer Originalbeleg", "page": 1}]}\n'
+            "}\n"
+            "Konfidenzen gelten pro Feld und liegen zwischen 0 und 1. "
+            "Belegzitate müssen wortgetreu aus der Eingabe stammen; Seitenzahlen nur nennen, wenn erkennbar."
         )
-        text_input = fused_text[:_MAX_OCR_CHARS]
+        system_prompt = _domain_neutral_prompt(
+            self._get_prompt("analysis", default_sys), default_sys, task="analysis"
+        )
+        text_input = build_document_excerpt(fused_text, max_chars=_MAX_ANALYSIS_CHARS)
+        user_prompt = (
+            "Analysiere die folgende Dokumentrepräsentation. Bereiche sind Auszüge "
+            "aus Anfang, Mitte und Ende desselben Dokuments.\n\n" + text_input
+        )
+        cache_input = CacheInput(
+            task="metadata_analysis",
+            system_prompt_hash=sha256_text(system_prompt),
+            user_prompt_hash=sha256_text(user_prompt),
+            source_hashes={"fused_text": sha256_text(fused_text)},
+            options={
+                "think": bool(self.think_analysis),
+                "schema": "unified_ocr_archival_metadata_v2",
+                "excerpt_strategy": "head_middle_tail",
+                "max_chars": _MAX_ANALYSIS_CHARS,
+            },
+        )
 
-        for _ in range(2):
+        for attempt in range(2):
             try:
                 res = self._query_with_privacy(
                     self.analysis_model,
-                    self._get_prompt("analysis", default_sys),
-                    text_input,
+                    system_prompt,
+                    user_prompt,
                     think=self.think_analysis,
-                    max_tokens=1024,
-                    raw_text=fused_text
+                    max_tokens=2048,
+                    raw_text=fused_text,
+                    cache_input=CacheInput(
+                        task=cache_input.task,
+                        system_prompt_hash=cache_input.system_prompt_hash,
+                        user_prompt_hash=cache_input.user_prompt_hash,
+                        source_hashes=cache_input.source_hashes,
+                        options={**cache_input.options, "attempt": attempt},
+                    ),
                 )
-                start = res.find("{")
-                end   = res.rfind("}") + 1
-                if start != -1 and end > start:
-                    return json.loads(res[start:end])
-            except Exception:
-                pass
-        return {}
+                parsed = parse_metadata_response(res)
+                if parsed is not None:
+                    return normalize_metadata(parsed, source_text=fused_text)
+                self._log(f"  Metadatenanalyse: unlesbares JSON (Versuch {attempt + 1}).")
+            except Exception as exc:
+                self._log(f"  Metadatenanalyse fehlgeschlagen (Versuch {attempt + 1}): {exc}")
+        return empty_metadata()
 
     # ------------------------------------------------------------------ #
     #  Phase 8 – Dokumenten-Klassifikation                               #

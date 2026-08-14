@@ -8,6 +8,8 @@ from core.ocr import (
     extract_pages_as_images,
     extract_ocr_text_per_page,
     inject_fused_text_and_metadata,
+    update_archival_pdf_metadata,
+    validate_archival_pdf,
 )
 
 __all__ = [
@@ -18,4 +20,6 @@ __all__ = [
     "extract_pages_as_images",
     "extract_ocr_text_per_page",
     "inject_fused_text_and_metadata",
+    "update_archival_pdf_metadata",
+    "validate_archival_pdf",
 ]

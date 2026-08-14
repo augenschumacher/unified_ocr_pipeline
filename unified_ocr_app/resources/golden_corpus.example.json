@@ -1,0 +1,41 @@
+{
+  "schema": "unified_ocr_golden_corpus_v1",
+  "thresholds": {
+    "max_weighted_cer": 0.03,
+    "max_mean_wer": 0.08,
+    "min_critical_value_recall": 1.0,
+    "min_mean_tag_f1": 0.9,
+    "min_metadata_accuracy": 1.0,
+    "min_folder_accuracy": 1.0
+  },
+  "cases": [
+    {
+      "id": "rechnung_de_01",
+      "description": "Deutsche Rechnung mit Umlauten, Betrag, Datum und Referenz",
+      "reference_text": "Müller & Söhne GmbH\nRechnungsnummer: RE-2026-00417\nRechnungsdatum: 12.07.2026\nGesamtbetrag: 1.234,56 EUR",
+      "critical_values": ["Müller & Söhne GmbH", "RE-2026-00417", "12.07.2026", "1.234,56 EUR"],
+      "expected_tags": ["Rechnung", "Finanzen"],
+      "expected_metadata": {
+        "document_date": "2026-07-12",
+        "document_type": "Rechnung",
+        "issuer": "Müller & Söhne GmbH",
+        "amount": "1234.56",
+        "currency": "EUR"
+      },
+      "expected_target_path": "Musterbestand/Finanzen/Rechnungen"
+    },
+    {
+      "id": "vertrag_mehrsprachig_01",
+      "description": "Deutsch-englischer Vertrag mit Aktenzeichen",
+      "reference_text": "Vertragsnummer / Contract number: AB-7781-X\nGültig ab / Effective from: 01.01.2026\nKündigungsfrist: drei Monate",
+      "critical_values": ["AB-7781-X", "01.01.2026", "drei Monate"],
+      "expected_tags": ["Vertrag"],
+      "expected_metadata": {
+        "document_date": "2026-01-01",
+        "document_type": "Vertrag",
+        "language": "de"
+      },
+      "expected_target_path": "Musterbestand/Verträge"
+    }
+  ]
+}

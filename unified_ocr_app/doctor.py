@@ -31,6 +31,7 @@ def build_doctor_report(
         resolved_base_dir,
         credentials_path=resolved_credentials,
         token_path=resolved_token,
+        ocr_languages=settings.get("ocr_languages", "deu+eng"),
     )
 
 

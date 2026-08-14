@@ -11,9 +11,19 @@ permissions:
 
 jobs:
   test:
-    name: Tests and release check
-    runs-on: ubuntu-latest
+    # Die App ist eine Windows-Desktop-Anwendung. Ein reiner Linux-Lauf kann
+    # ganze Fehlerklassen nicht sehen: unter POSIX darf eine geoeffnete Datei
+    # geloescht werden, weshalb gesperrte PDF-Handles (WinError 32) dort nie
+    # auffallen. Windows ist deshalb der massgebliche Runner, Linux laeuft als
+    # schneller Zusatz mit.
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
 
     steps:
       - name: Check out repository
@@ -29,10 +39,17 @@ jobs:
             unified_ocr_app/requirements.txt
             unified_ocr_app/pyproject.toml
 
-      - name: Install system OCR dependencies
+      - name: Install system OCR dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ghostscript tesseract-ocr poppler-utils
+
+      - name: Install system OCR dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install --no-progress -y tesseract ghostscript
+        shell: pwsh
 
       - name: Install Python dependencies
         run: |
@@ -44,3 +61,33 @@ jobs:
 
       - name: Run release safety check
         run: python unified_ocr_app/release_check.py
+
+  gui-test:
+    # Die Tk-Tests ueberspringen sich selbst, wenn kein Display erreichbar ist.
+    # Ohne eigenen Job mit Display waeren sie in der CI dauerhaft unsichtbar.
+    name: GUI tests (Tk display)
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            unified_ocr_app/requirements.txt
+            unified_ocr_app/pyproject.toml
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run GUI tests and fail if they were skipped
+        run: python -m pytest unified_ocr_app/tests/test_review_queue_ui.py -rs --no-header
+        shell: pwsh

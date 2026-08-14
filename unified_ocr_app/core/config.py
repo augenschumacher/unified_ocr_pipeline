@@ -2,6 +2,8 @@ import os
 import logging
 from pathlib import Path
 
+logger = logging.getLogger("UnifiedOCR")
+
 def setup_paths():
     # Add Ghostscript
     program_files = [Path(os.environ.get("ProgramFiles", r"C:\Program Files"))]
@@ -31,6 +33,26 @@ def setup_paths():
                 os.environ["PATH"] = str(candidate) + os.pathsep + existing_path
             break
 
+    # Add QPDF for OCRmyPDF on Windows.
+    qpdf_candidates = []
+    for root in program_files:
+        qpdf_root = root / "qpdf"
+        if qpdf_root.exists():
+            qpdf_candidates.extend(sorted(qpdf_root.glob("**\\bin"), reverse=True))
+        qpdf_candidates.extend(sorted(root.glob("qpdf*\\bin"), reverse=True))
+    existing_path = os.environ.get("PATH", "")
+    for candidate in qpdf_candidates:
+        if (candidate / "qpdf.exe").exists():
+            if str(candidate).lower() not in existing_path.lower():
+                os.environ["PATH"] = str(candidate) + os.pathsep + existing_path
+            break
+
+    # Add Microsoft Store app execution aliases such as winget.exe.
+    windows_apps = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WindowsApps"
+    existing_path = os.environ.get("PATH", "")
+    if (windows_apps / "winget.exe").exists() and str(windows_apps).lower() not in existing_path.lower():
+        os.environ["PATH"] = str(windows_apps) + os.pathsep + existing_path
+
 def setup_logging(base_dir: Path) -> logging.Logger:
     log_dir = base_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -57,7 +79,7 @@ def setup_logging(base_dir: Path) -> logging.Logger:
     return logger
 
 class AppConfig:
-    def __init__(self, base_dir: str, additional_consume_dirs=None):
+    def __init__(self, base_dir: str, additional_consume_dirs=None, large_pdf_page_limit: int = 20):
         self.base_dir = Path(base_dir)
         self.consume_dir = self.base_dir / "consume"
         self.original_dir = self.base_dir / "original"
@@ -65,9 +87,17 @@ class AppConfig:
         self.error_dir = self.base_dir / "error"
         self.log_dir = self.base_dir / "logs"
         self.work_dir = self.base_dir / "work"
-        self.large_pdf_page_limit = 20
+        self.large_pdf_page_limit = self._coerce_large_pdf_page_limit(large_pdf_page_limit)
         self.additional_consume_dirs = []
         self.set_additional_consume_dirs(additional_consume_dirs or [])
+
+    @staticmethod
+    def _coerce_large_pdf_page_limit(value) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 20
+        return max(1, min(parsed, 1000))
 
     def _path_key(self, path: Path) -> str:
         try:
@@ -121,17 +151,41 @@ class AppConfig:
         for d in [*self.consume_dirs, self.original_dir, self.final_dir, self.error_dir, self.log_dir, self.work_dir]:
             d.mkdir(parents=True, exist_ok=True)
             
-    def cleanup_error_dir(self):
+    def cleanup_error_dir(self, preserve=None, *, max_entries: int | None = None):
+        """Explicit legacy retention helper.
+
+        Error artifacts can contain the only recoverable copy of an input.  They
+        are therefore never removed merely because another job failed.  Callers
+        must opt in with a positive ``max_entries`` value; the normal pipeline
+        intentionally never does so.
+        """
+        if max_entries is None:
+            return []
+        max_entries = max(0, int(max_entries))
+        preserve_keys = {self._path_key(Path(path)) for path in (preserve or [])}
+        removed = []
         try:
             files = sorted(self.error_dir.glob("*"), key=lambda f: f.stat().st_mtime, reverse=True)
-            for f in files[3:]:
+            kept = 0
+            for f in files:
+                if self._path_key(f) in preserve_keys:
+                    continue
+                kept += 1
+                if kept <= max_entries:
+                    continue
                 try:
                     if f.is_file():
                         f.unlink()
                     elif f.is_dir():
                         import shutil
                         shutil.rmtree(f)
+                    removed.append(f)
                 except Exception:
-                    pass
+                    logger.warning(
+                        "Alt-Artefakt %s konnte nicht entfernt werden.", f, exc_info=True
+                    )
         except Exception:
-            pass
+            logger.warning(
+                "Aufraeumen alter Artefakte wurde abgebrochen.", exc_info=True
+            )
+        return removed

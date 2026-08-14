@@ -6,7 +6,12 @@ from tkinter import messagebox
 from pathlib import Path
 
 from core.cloud.drive_sync import build_drive_sync_preview, sync_drive_folders
-from core.cloud.folder_registry import FolderRegistry
+from core.cloud.folder_registry import (
+    ARCHIVE_INTERNAL_TOP_LEVEL_NAMES,
+    FolderRegistry,
+    normalize_archive_path,
+    resolve_archive_target,
+)
 from core.cloud.gdrive_client import GoogleDriveClient
 
 
@@ -15,6 +20,7 @@ RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL",
     *(f"COM{i}" for i in range(1, 10)),
     *(f"LPT{i}" for i in range(1, 10)),
+    *(name.upper() for name in ARCHIVE_INTERNAL_TOP_LEVEL_NAMES),
 }
 DEFAULT_TEMPLATE_CATEGORIES = [
     "Gesundheit",
@@ -178,6 +184,16 @@ def create_final_directories(base_dir: Path, tree: dict) -> list[Path]:
         target.mkdir(parents=True, exist_ok=True)
         created.append(target)
     return created
+
+
+def archive_directory_has_records(final_dir: Path, relative_path: str) -> bool:
+    """Return true when a registry path already contains files or links."""
+    target = resolve_archive_target(Path(final_dir), normalize_archive_path(relative_path))
+    if not target.exists():
+        return False
+    if target.is_symlink():
+        return True
+    return any(path.is_file() or path.is_symlink() for path in target.rglob("*"))
 
 
 class TemplateDialog(ctk.CTkToplevel):
@@ -677,6 +693,21 @@ class PathManagerWindow(ctk.CTkToplevel):
 
     def delete_item(self, child):
         node = get_node_by_path(self.tree, self.selected_parent_path) if self.selected_parent_path else self.tree
+        full_path = "/".join([*self.selected_parent_path, child])
+        try:
+            if archive_directory_has_records(self.base_dir / "final", full_path):
+                messagebox.showerror(
+                    "Belegter Archivpfad",
+                    (
+                        "Dieser Archivpfad enthält bereits Dokumente und kann nicht aus der "
+                        "Registry entfernt werden. Verschieben Sie den Bestand zuerst über "
+                        "eine protokollierte Migration."
+                    ),
+                )
+                return
+        except Exception as exc:
+            messagebox.showerror("Prüfung fehlgeschlagen", str(exc))
+            return
         has_children = len(node.get(child, {})) > 0
         message = (
             f"'{child}' wird aus der Ablageliste entfernt. Bereits erstellte Ordner auf der Festplatte bleiben erhalten."
@@ -706,6 +737,18 @@ class PathManagerWindow(ctk.CTkToplevel):
             return
 
         old_full_path = "/".join([*self.selected_parent_path, child])
+        try:
+            if archive_directory_has_records(self.base_dir / "final", old_full_path):
+                messagebox.showerror(
+                    "Belegter Archivpfad",
+                    "Dieser Pfad enthält bereits archivierte Dateien und wird nicht automatisch umbenannt.\n\n"
+                    "Legen Sie den neuen Pfad separat an. Eine Bestandsmigration muss inklusive Index, "
+                    "Manifesten und Synchronisationszielen geplant und protokolliert werden.",
+                )
+                return
+        except Exception as exc:
+            messagebox.showerror("Pfadprüfung fehlgeschlagen", str(exc))
+            return
         ok, result = rename_child_node(node, child, new_name)
         if not ok:
             messagebox.showerror("Fehler", result)
@@ -753,28 +796,50 @@ class PathManagerWindow(ctk.CTkToplevel):
         return {path: ctx for path, ctx in self.path_contexts.items() if path in valid_paths}
 
     def _save_tree_and_contexts(self):
-        self.registry.save_tree(self.tree)
-        self.registry.data["path_contexts"] = self._filtered_contexts()
-        self.registry.save()
+        self.registry.save_tree(self.tree, path_contexts=self._filtered_contexts())
 
-    def _apply_pending_directory_moves(self) -> list[str]:
-        warnings = []
+    def _apply_pending_directory_moves(self) -> list[tuple[Path, Path]]:
+        """Rename empty structures in user-action order with rollback."""
         final_dir = self.base_dir / "final"
-        for old_path, new_path in sorted(self.pending_path_moves, key=lambda item: item[0].count("/")):
-            old_dir = final_dir.joinpath(*[part for part in old_path.split("/") if part])
-            new_dir = final_dir.joinpath(*[part for part in new_path.split("/") if part])
-            if old_dir == new_dir or not old_dir.exists():
-                continue
-            if new_dir.exists():
-                warnings.append(f"{old_path} -> {new_path}: Zielordner existiert bereits, alter Ordner wurde nicht verschoben.")
-                continue
-            try:
+        completed: list[tuple[Path, Path]] = []
+        try:
+            # Preserve chronological order: a later child rename may refer to
+            # the destination created by an earlier parent rename.
+            for old_path, new_path in self.pending_path_moves:
+                old_dir = resolve_archive_target(final_dir, normalize_archive_path(old_path))
+                new_dir = resolve_archive_target(final_dir, normalize_archive_path(new_path))
+                if old_dir == new_dir or not old_dir.exists():
+                    continue
+                if archive_directory_has_records(final_dir, old_path):
+                    raise RuntimeError(
+                        f"{old_path} enthält inzwischen Archivdateien und darf nicht automatisch verschoben werden."
+                    )
+                if new_dir.exists():
+                    raise FileExistsError(
+                        f"Zielordner existiert bereits: {new_path}"
+                    )
                 new_dir.parent.mkdir(parents=True, exist_ok=True)
                 old_dir.rename(new_dir)
+                completed.append((old_dir, new_dir))
+            return completed
+        except Exception:
+            self._rollback_directory_moves(completed)
+            raise
+
+    @staticmethod
+    def _rollback_directory_moves(completed: list[tuple[Path, Path]]) -> None:
+        rollback_errors = []
+        for old_dir, new_dir in reversed(completed):
+            try:
+                if new_dir.exists() and not old_dir.exists():
+                    old_dir.parent.mkdir(parents=True, exist_ok=True)
+                    new_dir.rename(old_dir)
             except OSError as exc:
-                warnings.append(f"{old_path} -> {new_path}: {exc}")
-        self.pending_path_moves.clear()
-        return warnings
+                rollback_errors.append(f"{new_dir} -> {old_dir}: {exc}")
+        if rollback_errors:
+            raise RuntimeError(
+                "Ordner-Rollback fehlgeschlagen: " + "; ".join(rollback_errors)
+            )
 
     def open_template_dialog(self):
         TemplateDialog(self, list(self.tree.keys()), self.apply_template)
@@ -792,6 +857,13 @@ class PathManagerWindow(ctk.CTkToplevel):
             messagebox.showwarning(
                 "Google Drive nicht aktiv",
                 "Bitte Google Drive zuerst in den Einstellungen verknüpfen und aktivieren.",
+            )
+            return
+
+        if self.pending_path_moves:
+            messagebox.showwarning(
+                "Lokale Änderungen zuerst speichern",
+                "Bitte schließen Sie die Pfad-Konfiguration zuerst ab, bevor die Struktur mit Google Drive synchronisiert wird.",
             )
             return
 
@@ -880,18 +952,18 @@ class PathManagerWindow(ctk.CTkToplevel):
             messagebox.showerror("Konfiguration ungültig", message)
             return
 
+        completed_moves: list[tuple[Path, Path]] = []
         try:
-            self._save_tree_and_contexts()
-            move_warnings = self._apply_pending_directory_moves()
-            created = create_final_directories(self.base_dir, self.tree)
+            completed_moves = self._apply_pending_directory_moves()
+            try:
+                created = create_final_directories(self.base_dir, self.tree)
+                self._save_tree_and_contexts()
+            except Exception:
+                self._rollback_directory_moves(completed_moves)
+                raise
+            self.pending_path_moves.clear()
             if self.on_save_callback:
                 self.on_save_callback(created)
-            if move_warnings:
-                messagebox.showwarning(
-                    "Einige Ordner wurden nicht verschoben",
-                    "Die Registry wurde gespeichert, aber einzelne lokale Ordner konnten nicht automatisch verschoben werden:\n\n"
-                    + "\n".join(move_warnings[:8]),
-                )
             self.destroy()
         except Exception as e:
             messagebox.showerror("Fehler", f"Konnte Konfiguration nicht speichern: {e}")

@@ -11,7 +11,7 @@ oder Synology/WebDAV-Ablagestruktur organisieren.
 
 ## Features
 
-- Ueberwachter Primaer-Eingang plus optionale weitere Eingangsordner fuer PDF, PNG, JPG, HEIC, DOCX, ODT, DOC und ODOC
+- Ueberwachter Primaer-Eingang plus optionale weitere Eingangsordner fuer PDF, PNG, JPG/JPEG/JFIF, HEIC/HEIF, TIFF, BMP, WEBP, DOCX, ODT, DOC und ODOC
 - OCRmyPDF plus Docling-Extraktion
 - Optionale LLM-Stufen fuer GLM-OCR, Vision-Review, Text-Fusion und Analyse
 - Unterstuetzung fuer lokale Ollama-Modelle und API-Provider ueber LiteLLM
@@ -24,7 +24,7 @@ oder Synology/WebDAV-Ablagestruktur organisieren.
 - Optionale Redaction sensibler Texte vor externen LLM-Aufrufen
 - Optionaler Google-Drive-Upload und Google-Drive-Ordnersync
 - Optionaler Synology/WebDAV-Upload mit gleicher Ablagestruktur
-- Verbesserter PDF-Textlayer mit blockweiser Lesereihenfolge fuer mehrspaltige Seiten
+- Koordinatentreuer OCRmyPDF-Textlayer; blockweise Layoutextraktion dient der Lesereihenfolge- und Qualitaetspruefung
 - Job-Historie unter `<Basisordner>/logs/job_history.jsonl`
 - Job-Manifeste pro Verarbeitungslauf mit Stage-Status, Artefakten, Hashes und Sync-Upload-Audit
 - Optionale Debug-/Diagnoseberichte pro Job mit Stage-Dauern, Textquellen-Statistiken, Layoutpaketen und Output-Hashes
@@ -53,6 +53,45 @@ LLM-Provider und Ausgabedateien mit Testdokumenten geprueft werden.
 - Optional: API-Keys fuer Gemini, OpenAI oder Mistral
 
 ## Installation
+
+### Fertiger Windows-Installer
+
+Fuer normale Anwenderinnen und Anwender kann aus dem Repository-Root ein
+Windows-Installer gebaut und verteilt werden:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\build_windows_release.ps1
+```
+
+Das erzeugt:
+
+```text
+release\UnifiedOCR_Setup.exe
+```
+
+Der Installer installiert die App unter
+`%LOCALAPPDATA%\Programs\UnifiedOCR`, legt Desktop- und Startmenue-Verknuepfung
+an und enthaelt die benoetigte Python-Laufzeit sowie die Python-Abhaengigkeiten.
+Beim Setup werden die verpflichtenden OCR-Systemkomponenten Tesseract,
+Ghostscript und QPDF geprueft und bei Bedarf per WinGet installiert. OCRmyPDF
+selbst ist als Python-Abhaengigkeit gebuendelt und wird in der EXE ueber die
+Python-API genutzt, falls kein separates `ocrmypdf`-Kommando vorhanden ist.
+
+Ollama ist bewusst nicht fest in der EXE enthalten. Der Installer fragt, ob
+Ollama installiert bzw. verwendet werden soll. Wenn ja, fragt er nach der
+VRAM-Klasse und schlaegt lokale Modelle vor:
+
+| VRAM | GLM-OCR | Vision | Fusion/Analyse |
+| --- | --- | --- | --- |
+| 8 GB | `glm-ocr:bf16` | `qwen3-vl:4b-instruct-q4_K_M` | `gemma4:e4b-it-qat` |
+| 12-16 GB | `glm-ocr:bf16` | `qwen3-vl:8b-instruct-q4_K_M` | `gemma4:12b-it-qat` |
+| 24 GB | `glm-ocr:bf16` | `qwen3-vl:30b-a3b-instruct-q4_K_M` | `gemma4:26b-a4b-it-qat` |
+| 32 GB | `glm-ocr:bf16` | `qwen3-vl:32b-instruct-q4_K_M` | `gemma4:31b-it-qat` |
+
+Der Modell-Download ist optional, weil die Dateien gross sind. Die Auswahl wird
+lokal in `%APPDATA%\UnifiedOCR\settings.json` gespeichert.
+
+### Entwicklung aus dem Quellcode
 
 ```powershell
 cd <lokaler-projektordner>
@@ -299,6 +338,14 @@ fehlgeschlagenen Jobs im Error-Bereich. Darin stehen Eingabe-Hashes,
 Pipeline-Stages, erzeugte Ausgabepfade, Metadaten und optional Google-Drive-
 Upload-IDs.
 
+Archiv-PDF und KI-Textderivate sind bewusst getrennt: Das PDF stammt aus dem
+OCRmyPDF-Lauf (standardmaessig PDF/A-2b) und behaelt dessen koordinatentreuen
+Textlayer. Frei formulierter LLM-Text wird nur in TXT/DOCX und Begleitdaten
+gespeichert, niemals als geometrisch falscher unsichtbarer PDF-Text.
+Nach der letzten Metadatenaktualisierung prueft die App die PDF-Struktur und
+die PDF/A-2b-Identifikation erneut. Das ist ein Laufzeit-Postflight, jedoch
+keine vollstaendige veraPDF-Konformitaetspruefung.
+
 Wenn `Debug-/Diagnoseberichte speichern` aktiviert ist, schreibt die App
 zusaetzlich `<Basisordner>/final/begleitdateien/*_debug_report.json`; bei
 Fehlern landet der Bericht im Error-Bereich. Der Diagnosebericht enthaelt
@@ -352,6 +399,26 @@ py -3.10 release_check.py
 py -3.10 doctor.py --base-dir C:\OCR_Workdir
 ```
 
+### Eigener OCR-Golden-Corpus
+
+Die Beispieldefinition `resources/golden_corpus.example.json` kann kopiert und
+mit repräsentativen, freigegebenen Dokumenttranskriptionen erweitert werden.
+Zu jeder Fall-ID gehört ein OCR-Ergebnis `<ID>.txt`. Wenn erwartete Tags,
+Metadaten oder ein Zielordner definiert sind, gehört zusätzlich ein `<ID>.json`
+mit `metadata` und `target_path` dazu. Der Benchmark misst gewichtete
+Zeichenfehlerquote (CER), Wortfehlerquote (WER), kritische Werte, Tag-F1 sowie
+Metadaten- und Ordner-Trefferquote:
+
+```powershell
+py -3.10 -m core.ocr_benchmark `
+  --corpus resources\golden_corpus.example.json `
+  --candidate-dir C:\OCR_Benchmark\results `
+  --report C:\OCR_Benchmark\benchmark_report.json
+```
+
+Exitcode `0` bedeutet, dass alle im Corpus definierten Grenzwerte eingehalten
+sind; Exitcode `2` markiert eine Qualitaetsregression oder fehlende Ergebnisse.
+
 Vor einem Release:
 
 1. Tests ausfuehren.
@@ -369,9 +436,9 @@ Vor einem Release:
 ## Bekannte Grenzen
 
 - Die Qualitaet der OCR haengt stark von Scanqualitaet, Sprache und installierten OCR-Komponenten ab.
-- LLM-Ergebnisse muessen bei wichtigen medizinischen, finanziellen oder rechtlichen Dokumenten manuell geprueft werden.
+- LLM-Ergebnisse muessen bei inhaltlich wichtigen Dokumenten manuell geprueft werden. Numerische oder quellenbezogene Auffaelligkeiten landen automatisch in der persistenten Review-Queue.
 - Cloud- und API-Provider koennen Kosten verursachen oder Kontingente begrenzen.
 - Google Drive Sync erstellt fehlende Ordner und speichert Drive-IDs, loescht aber keine Drive-Ordner.
 - Synology/WebDAV Sync erstellt fehlende Ordner und laedt Dateien in die gleiche Zielstruktur hoch.
-- Der finale PDF-Textlayer wird blockweise aufgebaut. Bei typischen zweispaltigen Seiten wird links vor rechts gelesen; sehr komplexe Layouts sollten weiterhin stichprobenartig geprueft werden.
-- Wenn die dokumentweite Qualitaetskorrektur Text veraendert, bleibt der PDF-Textlayer seitenweise aus der urspruenglichen Fusion erhalten; der korrigierte Gesamttext wird fuer TXT/DOCX/Metadaten genutzt.
+- Der finale PDF-Textlayer stammt ausschliesslich von OCRmyPDF. Komplexe Layouts, Handschrift und sehr schlechte Vorlagen sollten weiterhin stichprobenartig am unveraenderten Original geprueft werden.
+- Die Qualitaetskontrolle korrigiert oder ergaenzt keine Werte automatisch. Konflikte und unbelegte Werte werden als Reviewgrund mit Quellenbelegen ausgewiesen.

@@ -75,6 +75,15 @@ def test_release_check_passes_minimal_clean_tree(tmp_path):
     assert all(check["status"] == "ok" for check in result["checks"])
 
 
+def test_release_check_accepts_package_dir_as_starting_point(tmp_path):
+    _write_minimal_release_tree(tmp_path)
+
+    result = run_release_check(tmp_path / "unified_ocr_app")
+
+    assert result["status"] == "ok"
+    assert Path(result["root"]) == tmp_path.resolve()
+
+
 def test_release_check_flags_sensitive_files_and_secret_markers(tmp_path):
     _write_minimal_release_tree(tmp_path)
     (tmp_path / "credentials.json").write_text("{}", encoding="utf-8")

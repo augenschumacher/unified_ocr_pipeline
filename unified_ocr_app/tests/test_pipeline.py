@@ -30,7 +30,9 @@ class TestSettingsManager(unittest.TestCase):
             settings = mgr.load()
             self.assertEqual(settings["base_dir"], "C:\\OCR_Workdir")
             self.assertEqual(settings["output_format"], "PDF und DOCX")
-            self.assertEqual(settings["models"]["vision"], "qwen3-vl:30b-a3b-instruct-q4_K_M")
+            self.assertEqual(settings["models"]["vision"], "qwen3-vl:4b-instruct-q4_K_M")
+            self.assertEqual(settings["models"]["fusion"], "gemma4:e4b-it-qat")
+            self.assertEqual(settings["models"]["analysis"], "gemma4:e4b-it-qat")
             self.assertEqual(settings["models"]["glm_ocr"], "glm-ocr:bf16")
             self.assertFalse(settings["think_fusion"])
             self.assertFalse(settings["think_analysis"])
@@ -89,6 +91,59 @@ class TestSettingsManager(unittest.TestCase):
             settings["privacy_mode"] = "cloud_first"
             with self.assertRaises(ValueError):
                 mgr.save(settings)
+
+
+class TestCallbackCompatibility(unittest.TestCase):
+
+    def test_compatible_callback_trims_extra_preview_argument_for_legacy_callback(self):
+        from core.config import AppConfig
+        from core.pipeline import PipelineOrchestrator
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orch = PipelineOrchestrator(
+                config=AppConfig(Path(tmpdir)),
+                llm_client=MagicMock(),
+            )
+            seen = []
+
+            def legacy_callback(path):
+                seen.append(path)
+                return path
+
+            result = orch._call_compatible_callback(legacy_callback, "Jan/Steuern", Path("preview.pdf"))
+
+            self.assertEqual(result, "Jan/Steuern")
+            self.assertEqual(seen, ["Jan/Steuern"])
+
+    def test_compatible_callback_does_not_swallow_internal_type_error(self):
+        from core.config import AppConfig
+        from core.pipeline import PipelineOrchestrator
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orch = PipelineOrchestrator(
+                config=AppConfig(Path(tmpdir)),
+                llm_client=MagicMock(),
+            )
+
+            def broken_callback(path, preview_path=None):
+                raise TypeError("internal dialog bug")
+
+            with self.assertRaisesRegex(TypeError, "internal dialog bug"):
+                orch._call_compatible_callback(broken_callback, "Jan/Steuern", Path("preview.pdf"))
+
+    def test_compatible_callback_handles_no_argument_callback(self):
+        from core.config import AppConfig
+        from core.pipeline import PipelineOrchestrator
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            orch = PipelineOrchestrator(
+                config=AppConfig(Path(tmpdir)),
+                llm_client=MagicMock(),
+            )
+
+            result = orch._call_compatible_callback(lambda: "fallback", "Jan/Steuern", Path("preview.pdf"))
+
+            self.assertEqual(result, "fallback")
 
 
 class TestQualityChecker(unittest.TestCase):
@@ -470,9 +525,10 @@ class TestClassifier(unittest.TestCase):
 
 class TestPipelineExport(unittest.TestCase):
 
+    @patch("core.pipeline.validate_archival_pdf", return_value={"ok": True})
     @patch("core.pipeline.inject_fused_text_and_metadata")
     @patch("core.pipeline.save_markdown_as_docx")
-    def test_export_respects_settings(self, mock_save_docx, mock_inject_pdf):
+    def test_export_respects_settings(self, mock_save_docx, mock_inject_pdf, _mock_validate):
         from core.config import AppConfig
         from core.pipeline import PipelineOrchestrator
         from unittest.mock import MagicMock
@@ -481,6 +537,11 @@ class TestPipelineExport(unittest.TestCase):
             config = AppConfig(tmpdir_path)
             
             config.final_dir.mkdir(parents=True, exist_ok=True)
+
+            def create_pdf(_source, target, *_args, **_kwargs):
+                Path(target).write_bytes(b"%PDF-test")
+
+            mock_inject_pdf.side_effect = create_pdf
             
             orch = PipelineOrchestrator(
                 config=config,
@@ -507,9 +568,10 @@ class TestPipelineExport(unittest.TestCase):
             self.assertFalse(json_file.exists())
             mock_save_docx.assert_not_called()
 
+    @patch("core.pipeline.validate_archival_pdf", return_value={"ok": True})
     @patch("core.pipeline.inject_fused_text_and_metadata")
     @patch("core.pipeline.save_markdown_as_docx")
-    def test_export_generates_for_gdrive_upload(self, mock_save_docx, mock_inject_pdf):
+    def test_export_generates_for_gdrive_upload(self, mock_save_docx, mock_inject_pdf, _mock_validate):
         from core.config import AppConfig
         from core.pipeline import PipelineOrchestrator
         from unittest.mock import MagicMock
@@ -518,6 +580,11 @@ class TestPipelineExport(unittest.TestCase):
             config = AppConfig(tmpdir_path)
             
             config.final_dir.mkdir(parents=True, exist_ok=True)
+
+            def create_pdf(_source, target, *_args, **_kwargs):
+                Path(target).write_bytes(b"%PDF-test")
+
+            mock_inject_pdf.side_effect = create_pdf
             
             orch = PipelineOrchestrator(
                 config=config,
@@ -608,7 +675,7 @@ class TestPipelineExport(unittest.TestCase):
             # begleitdateien folder remains because it now contains the job manifest.
             self.assertFalse(docx_file.exists())
             self.assertFalse(json_file.exists())
-            self.assertTrue((begleit_dir / "doc_job_manifest.json").exists())
+            self.assertEqual(len(list(begleit_dir.glob("doc_*_job_manifest.json"))), 1)
 
 
 class TestPipelineCallbacksAndReview(unittest.TestCase):
@@ -969,7 +1036,7 @@ class TestAutoSubfolderCreation(unittest.TestCase):
             self.assertFalse(file1.exists())
             self.assertFalse(file2.exists())
 
-    def test_stage_organize_auto_subfolder_trigger(self):
+    def test_stage_organize_does_not_restructure_existing_archive_implicitly(self):
         from core.config import AppConfig
         from core.pipeline import PipelineOrchestrator
         
@@ -1003,16 +1070,13 @@ class TestAutoSubfolderCreation(unittest.TestCase):
             metadata = {"document_type": "Lohnabrechnung"}
             moved_files, target_path = orch._stage_organize("text", metadata, final_name)
             
-            # Target path should have been updated to Jan/Arbeit/Lohnabrechnung
-            self.assertEqual(target_path, "Jan/Arbeit/Lohnabrechnung")
-            
-            # New file should be moved to subfolder
-            sub_dir = target_dir / "Lohnabrechnung"
-            self.assertTrue(sub_dir.exists())
-            self.assertTrue((sub_dir / f"{final_name}.pdf").exists())
-            
-            # Existing file should have been consolidated
-            self.assertTrue((sub_dir / "2026-01-01_Entgeldbescheinigung.pdf").exists())
+            # A new ingestion must never silently restructure or relocate
+            # already archived records.  The explicitly confirmed target is
+            # authoritative for the current package only.
+            self.assertEqual(target_path, "Jan/Arbeit")
+            self.assertTrue((target_dir / f"{final_name}.pdf").exists())
+            self.assertTrue((target_dir / "2026-01-01_Entgeldbescheinigung.pdf").exists())
+            self.assertFalse((target_dir / "Lohnabrechnung").exists())
 
 
 class TestOcrPrep(unittest.TestCase):
@@ -1036,22 +1100,61 @@ class TestOcrPrep(unittest.TestCase):
             self.assertIn("--rotate-pages-threshold", cmd)
             self.assertIn("7", cmd)
             self.assertIn("--deskew", cmd)
-            self.assertIn("--force-ocr", cmd)
+            self.assertIn("--skip-text", cmd)
+            self.assertNotIn("--force-ocr", cmd)
 
-    @patch("core.ocr.pdf_prep.subprocess.run")
-    @patch("core.ocr.pdf_prep.shutil.which", return_value="/usr/bin/ocrmypdf")
-    def test_run_image_to_pdf_includes_rotation_flags(self, mock_which, mock_run):
+    @patch("core.ocr.pdf_prep._run_ocrmypdf_api")
+    @patch("core.ocr.pdf_prep.get_ocrmypdf_command", return_value=[])
+    def test_run_ocrmypdf_uses_api_when_cli_unavailable(self, mock_command, mock_api):
+        from core.ocr.pdf_prep import run_ocrmypdf
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sidecar = Path(tmpdir) / "sidecar.txt"
+            sidecar.write_text("api text", encoding="utf-8")
+
+            text = run_ocrmypdf(Path("input.pdf"), Path("output.pdf"), sidecar)
+
+        self.assertEqual(text, "api text")
+        mock_api.assert_called_once()
+
+    def test_run_image_to_pdf_creates_image_only_pdf_without_premature_ocr(self):
         from core.ocr.pdf_prep import run_image_to_pdf
-        mock_run.return_value = MagicMock(returncode=0)
-        
-        run_image_to_pdf(Path("input.jpg"), Path("output.pdf"))
-        
-        mock_run.assert_called_once()
-        args, kwargs = mock_run.call_args
-        cmd = args[0]
-        self.assertIn("--rotate-pages", cmd)
-        self.assertIn("--rotate-pages-threshold", cmd)
-        self.assertIn("7", cmd)
+        from PIL import Image, ImageDraw
+        import fitz
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "input.png"
+            output_path = Path(tmpdir) / "output.pdf"
+            image = Image.new("RGB", (600, 300), "white")
+            ImageDraw.Draw(image).text((40, 100), "RE-2026-00417", fill="black")
+            image.save(image_path, dpi=(300, 300))
+            image.close()
+
+            result = run_image_to_pdf(image_path, output_path)
+
+            self.assertEqual(result, "")
+            self.assertTrue(output_path.is_file())
+            with fitz.open(output_path) as document:
+                self.assertEqual(document[0].get_text().strip(), "")
+
+
+class TestModelRecommendations(unittest.TestCase):
+
+    def test_recommendation_for_vram_uses_expected_tiers(self):
+        from core.model_recommendations import recommendation_for_vram
+
+        self.assertEqual(recommendation_for_vram(8).vision, "qwen3-vl:4b-instruct-q4_K_M")
+        self.assertEqual(recommendation_for_vram(12).vision, "qwen3-vl:8b-instruct-q4_K_M")
+        self.assertEqual(recommendation_for_vram(24).fusion, "gemma4:26b-a4b-it-qat")
+        self.assertEqual(recommendation_for_vram(32).analysis, "gemma4:31b-it-qat")
+
+    def test_llm_config_stages_are_ollama_prefixed(self):
+        from core.model_recommendations import recommendation_for_vram
+
+        stages = recommendation_for_vram(8).as_llm_config_stages()
+
+        self.assertEqual(stages["glm_ocr"], "ollama/glm-ocr:bf16")
+        self.assertEqual(stages["fusion"], "ollama/gemma4:e4b-it-qat")
 
 
 class TestGDriveConsolidation(unittest.TestCase):
@@ -1117,41 +1220,45 @@ class TestGDriveConsolidation(unittest.TestCase):
             self.assertEqual(kwargs2["removeParents"], "parent_id_123")
 
 
-import PIL.Image
+class TestImagePrepare(unittest.TestCase):
 
-class TestHEICPrepare(unittest.TestCase):
-
-    @patch("pillow_heif.register_heif_opener")
-    @patch("PIL.Image.open")
-    def test_heic_conversion_stage_prepare(self, mock_image_open, mock_register):
+    def test_stage_prepare_delegates_supported_image_formats(self):
         from core.pipeline import PipelineOrchestrator
         from core.config import AppConfig
-        
-        # Setup mock image object
-        mock_img = MagicMock()
-        mock_img.mode = "RGBA"
-        mock_image_open.return_value = mock_img
-        
+
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir_path = Path(tmpdir)
             config = AppConfig(tmpdir_path)
             orch = PipelineOrchestrator(config=config, llm_client=MagicMock())
-            
-            original_path = tmpdir_path / "input.heic"
-            original_path.write_text("dummy", encoding="utf-8") # Create dummy file
-            
             work_dir = tmpdir_path / "work"
             work_dir.mkdir()
-            
+
+            for suffix in [".heic", ".heif", ".tif", ".tiff", ".bmp", ".webp", ".jfif", ".jpe"]:
+                original_path = tmpdir_path / f"input{suffix}"
+                original_path.write_text("dummy", encoding="utf-8")
+                with patch.object(orch, "_convert_image_to_pdf", return_value=work_dir / f"input_work.pdf") as mock_convert:
+                    work_pdf = orch._stage_prepare(original_path, work_dir)
+                mock_convert.assert_called_once_with(original_path, work_pdf, suffix)
+                self.assertEqual(work_pdf.name, "input_work.pdf")
+
+    def test_stage_prepare_converts_bmp_to_pdf_with_pil(self):
+        from PIL import Image
+        from core.pipeline import PipelineOrchestrator
+        from core.config import AppConfig
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            config = AppConfig(tmpdir_path)
+            orch = PipelineOrchestrator(config=config, llm_client=MagicMock())
+            work_dir = tmpdir_path / "work"
+            work_dir.mkdir()
+            original_path = tmpdir_path / "scan.bmp"
+            Image.new("RGB", (12, 12), "white").save(original_path)
+
             work_pdf = orch._stage_prepare(original_path, work_dir)
-            
-            # Assertions
-            mock_register.assert_called_once()
-            mock_image_open.assert_called_once_with(original_path)
-            mock_img.convert.assert_called_once_with("RGB")
-            mock_img.convert.return_value.save.assert_called_once()
-            mock_img.convert.return_value.close.assert_called_once()
-            self.assertEqual(work_pdf.name, "input_work.pdf")
+
+            self.assertTrue(work_pdf.exists())
+            self.assertEqual(work_pdf.read_bytes()[:4], b"%PDF")
 
 
 class TestImageDescriptionPipeline(unittest.TestCase):
@@ -1220,12 +1327,14 @@ class TestImageDescriptionPipeline(unittest.TestCase):
             # Normal vision_review should NOT be called since text length is 0
             mock_llm.run_vision_review.assert_not_called()
             
-            # Verify export was called with image description in fused_pages and fused_text
+            # Image descriptions are enrichment, not OCR transcription. They
+            # must stay out of the hidden/searchable text layer.
             orch._stage_export.assert_called_once()
             args = orch._stage_export.call_args[0]
             # args: work_pdf, fused_pages, fused_text, final_name, metadata, image_paths, quality_report
-            self.assertEqual(args[1], {1: "[Bildbeschreibung: Eine reine Skizze eines Hauses.]"})
-            self.assertEqual(args[2], "[Bildbeschreibung: Eine reine Skizze eines Hauses.]")
+            self.assertEqual(args[1], {1: ""})
+            self.assertEqual(args[2], "")
+            self.assertEqual(args[6]["visual_descriptions"], {"1": "Eine reine Skizze eines Hauses."})
 
     @patch("core.pipeline.shutil.move")
     def test_pipeline_low_text_page(self, mock_move):
@@ -1273,11 +1382,16 @@ class TestImageDescriptionPipeline(unittest.TestCase):
             mock_llm.run_image_description.assert_called_once_with("dummy_page1.png", 1)
             mock_llm.run_vision_review.assert_called_once_with("dummy_page1.png", "Stempel: Bezahlt", 1)
             
-            # Verify description is prepended in exporting
+            # Description remains sidecar enrichment and is not prepended to
+            # the word-faithful OCR transcription.
             orch._stage_export.assert_called_once()
             args = orch._stage_export.call_args[0]
-            self.assertEqual(args[1], {1: "[Bildbeschreibung: Ein Stempel mit der Aufschrift 'Bezahlt'.]\n\nBezahlt"})
-            self.assertEqual(args[2], "[Bildbeschreibung: Ein Stempel mit der Aufschrift 'Bezahlt'.]\n\nBezahlt")
+            self.assertEqual(args[1], {1: "Bezahlt"})
+            self.assertEqual(args[2], "Bezahlt")
+            self.assertEqual(
+                args[6]["visual_descriptions"],
+                {"1": "Ein Stempel mit der Aufschrift 'Bezahlt'."},
+            )
 
     @patch("core.pipeline.shutil.move")
     def test_pipeline_normal_text_page(self, mock_move):
@@ -1396,6 +1510,10 @@ class TestLargePdfMode(unittest.TestCase):
         # Mock fitz document
         mock_doc = MagicMock()
         mock_doc.__len__.return_value = 25
+        # fitz.Document ist ein Context-Manager und liefert im with-Block sich
+        # selbst zurueck.  Ohne diese Zeile testet der Mock ein Verhalten, das
+        # PyMuPDF so nicht hat.
+        mock_doc.__enter__.return_value = mock_doc
         mock_fitz_open.return_value = mock_doc
         
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1468,6 +1586,10 @@ class TestLargePdfMode(unittest.TestCase):
         # Mock fitz document to 25 pages
         mock_doc = MagicMock()
         mock_doc.__len__.return_value = 25
+        # fitz.Document ist ein Context-Manager und liefert im with-Block sich
+        # selbst zurueck.  Ohne diese Zeile testet der Mock ein Verhalten, das
+        # PyMuPDF so nicht hat.
+        mock_doc.__enter__.return_value = mock_doc
         mock_fitz_open.return_value = mock_doc
         
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1534,6 +1656,10 @@ class TestLargePdfMode(unittest.TestCase):
         # Mock fitz document to 5 pages (< 20)
         mock_doc = MagicMock()
         mock_doc.__len__.return_value = 5
+        # fitz.Document ist ein Context-Manager und liefert im with-Block sich
+        # selbst zurueck.  Ohne diese Zeile testet der Mock ein Verhalten, das
+        # PyMuPDF so nicht hat.
+        mock_doc.__enter__.return_value = mock_doc
         mock_fitz_open.return_value = mock_doc
         
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1810,6 +1936,11 @@ class TestDocxInputMode(unittest.TestCase):
             
             dummy_odt = tmpdir_path / "dummy_work.odt"
             dummy_odt.write_text("dummy")
+
+            def create_docx(_text, target, **_kwargs):
+                Path(target).write_bytes(b"docx")
+
+            mock_save_docx.side_effect = create_docx
             
             orch._stage_export(
                 work_pdf=dummy_odt,
@@ -1825,7 +1956,9 @@ class TestDocxInputMode(unittest.TestCase):
             mock_save_docx.assert_called_once()
             args, kwargs = mock_save_docx.call_args
             self.assertEqual(args[0], "fused text content")
-            self.assertEqual(args[1], config.final_dir / "fused_odt.docx")
+            self.assertEqual(Path(args[1]).name, "fused_odt.docx")
+            self.assertEqual(Path(args[1]).parent.parent.name, "_export_transactions")
+            self.assertTrue((config.final_dir / "fused_odt.docx").is_file())
 
     def test_stage_organize_defers_when_new_path(self):
         from core.config import AppConfig
@@ -1876,8 +2009,8 @@ class TestDocxInputMode(unittest.TestCase):
             # Now run the deferred organization
             orch.process_deferred_organizations()
             
-            # Now the prompt mock should be called!
-            prompt_mock.assert_called_once_with("Jan/BrandNewFolder")
+            # Now the prompt mock should be called with the staged PDF preview path.
+            prompt_mock.assert_called_once_with("Jan/BrandNewFolder", staging_dir / f"{final_name}.pdf")
             
             # Staging folder should be cleaned up / empty
             self.assertFalse(staging_dir.exists())
@@ -1919,20 +2052,21 @@ class TestPDFPreviewFrame(unittest.TestCase):
                 # 1. Load PDF
                 preview.load_pdf(str(pdf_path))
                 self.assertIsNotNone(preview.doc)
-                self.assertEqual(preview.image_label.cget("text"), "")
-                self.assertIsNotNone(preview.image_label.cget("image"))
+                self.assertIsNotNone(preview._photo)
+                self.assertFalse(preview.canvas.find_withtag("message"))
                 
                 # 2. Load DOCX (bypass format)
                 preview.load_pdf(str(docx_path))
                 self.assertIsNone(preview.doc)
-                self.assertIn("DOCX-Dokument geladen", preview.image_label.cget("text"))
-                self.assertIsNone(preview.image_label.cget("image"))
+                message_id = preview.canvas.find_withtag("message")[0]
+                self.assertIn("DOCX-Dokument geladen", preview.canvas.itemcget(message_id, "text"))
+                self.assertIsNone(preview._photo)
                 
                 # 3. Load PDF again (Verify visual preview is restored)
                 preview.load_pdf(str(pdf_path))
                 self.assertIsNotNone(preview.doc)
-                self.assertEqual(preview.image_label.cget("text"), "")
-                self.assertIsNotNone(preview.image_label.cget("image"))
+                self.assertIsNotNone(preview._photo)
+                self.assertFalse(preview.canvas.find_withtag("message"))
                 
                 # Clean up
                 if preview.doc:

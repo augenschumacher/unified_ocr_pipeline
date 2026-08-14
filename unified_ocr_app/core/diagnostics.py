@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import time
 from datetime import datetime, timezone
@@ -177,5 +178,16 @@ class DiagnosticsRecorder:
         self.data["duration_ms"] = round((time.perf_counter() - self.started_at) * 1000, 2)
         destination = Path(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
+        temporary = destination.with_name(f".{destination.name}.{self.data['job_id']}.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(self.data, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.replace(temporary, destination)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
         return destination

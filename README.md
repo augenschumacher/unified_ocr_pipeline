@@ -11,7 +11,7 @@ oder Synology/WebDAV-Ablagestruktur organisieren.
 
 ## Features
 
-- Ueberwachter Primaer-Eingang plus optionale weitere Eingangsordner fuer PDF, PNG, JPG, HEIC, DOCX, ODT, DOC und ODOC
+- Ueberwachter Primaer-Eingang plus optionale weitere Eingangsordner fuer PDF, PNG, JPG/JPEG/JFIF, HEIC/HEIF, TIFF, BMP, WEBP, DOCX, ODT, DOC und ODOC
 - OCRmyPDF plus Docling-Extraktion
 - Optionale LLM-Stufen fuer GLM-OCR, Vision-Review, Text-Fusion und Analyse
 - Unterstuetzung fuer lokale Ollama-Modelle und API-Provider ueber LiteLLM
@@ -19,15 +19,17 @@ oder Synology/WebDAV-Ablagestruktur organisieren.
 - Ablagestrukturverwaltung mit Personen/Hauptbereichen und Kategorien
 - Kontextbasierte Sortierhinweise pro Pfad, z. B. Fahrzeuge, Hobbys, Kennzeichen oder Aliase
 - Progressiver Lernspeicher fuer bestaetigte Sortierentscheidungen mit mehreren Pfadvorschlaegen
+- Konfliktsichere lokale Einsortierung: vorhandene Dateien werden nicht still ueberschrieben
 - Lokale SQLite-Datenbank fuer Job-State, Dokumentindex, Review-Queue und Duplikaterkennung
 - Systemcheck fuer Python, Tesseract, OCRmyPDF, Ghostscript und Schreibrechte
 - Optionale Redaction sensibler Texte vor externen LLM-Aufrufen
 - Optionaler Google-Drive-Upload und Google-Drive-Ordnersync
 - Optionaler Synology/WebDAV-Upload mit gleicher Ablagestruktur
-- Verbesserter PDF-Textlayer mit blockweiser Lesereihenfolge fuer mehrspaltige Seiten
+- Koordinatentreuer OCRmyPDF-Textlayer; blockweise Layoutextraktion dient der Lesereihenfolge- und Qualitaetspruefung
 - Job-Historie unter `<Basisordner>/logs/job_history.jsonl`
 - Job-Manifeste pro Verarbeitungslauf mit Stage-Status, Artefakten, Hashes und Sync-Upload-Audit
 - Optionale Debug-/Diagnoseberichte pro Job mit Stage-Dauern, Textquellen-Statistiken, Layoutpaketen und Output-Hashes
+- Konfigurierbare Seitengrenze fuer reduzierte Analyse grosser PDFs
 - Datenschutzmodus `local_only`, der Cloud-LLMs, Google Drive und nicht-lokale WebDAV-Ziele fuer neue Jobs deaktiviert
 - Runtime-Audit in Qualitaetsberichten mit Modellnamen, Optionen und Prompt-Fingerprints
 
@@ -53,6 +55,52 @@ LLM-Provider und Ausgabedateien mit Testdokumenten geprueft werden.
 - Optional: API-Keys fuer Gemini, OpenAI oder Mistral
 
 ## Installation
+
+Kurzanleitungen:
+
+- [Installation](INSTALLATION.md)
+- [Erste Schritte](ERSTE_SCHRITTE.md)
+- [Datenschutz](DATENSCHUTZ.md)
+- [Release-Haertung](RELEASE_HARDENING.md)
+
+### Fertiger Windows-Installer
+
+Fuer normale Anwenderinnen und Anwender kann ein Windows-Installer gebaut und
+verteilt werden:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\build_windows_release.ps1
+```
+
+Das erzeugt:
+
+```text
+release\UnifiedOCR_Setup.exe
+```
+
+Der Installer installiert die App unter
+`%LOCALAPPDATA%\Programs\UnifiedOCR`, legt Desktop- und Startmenue-Verknuepfung
+an und enthaelt die benoetigte Python-Laufzeit sowie die Python-Abhaengigkeiten.
+Beim Setup werden die verpflichtenden OCR-Systemkomponenten Tesseract,
+Ghostscript und QPDF geprueft und bei Bedarf per WinGet installiert. OCRmyPDF
+selbst ist als Python-Abhaengigkeit gebuendelt und wird in der EXE ueber die
+Python-API genutzt, falls kein separates `ocrmypdf`-Kommando vorhanden ist.
+
+Ollama ist bewusst nicht fest in der EXE enthalten. Der Installer fragt, ob
+Ollama installiert bzw. verwendet werden soll. Wenn ja, fragt er nach der
+VRAM-Klasse und schlaegt lokale Modelle vor:
+
+| VRAM | GLM-OCR | Vision | Fusion/Analyse |
+| --- | --- | --- | --- |
+| 8 GB | `glm-ocr:bf16` | `qwen3-vl:4b-instruct-q4_K_M` | `gemma4:e4b-it-qat` |
+| 12-16 GB | `glm-ocr:bf16` | `qwen3-vl:8b-instruct-q4_K_M` | `gemma4:12b-it-qat` |
+| 24 GB | `glm-ocr:bf16` | `qwen3-vl:30b-a3b-instruct-q4_K_M` | `gemma4:26b-a4b-it-qat` |
+| 32 GB | `glm-ocr:bf16` | `qwen3-vl:32b-instruct-q4_K_M` | `gemma4:31b-it-qat` |
+
+Der Modell-Download ist optional, weil die Dateien gross sind. Die Auswahl wird
+lokal in `%APPDATA%\UnifiedOCR\settings.json` gespeichert.
+
+### Entwicklung aus dem Quellcode
 
 ```powershell
 cd <lokaler-projektordner>
@@ -266,9 +314,11 @@ Empfohlene Einrichtung:
 7. Optional eine Zielwurzel eintragen, z. B. `OCR`.
 8. Benutzername und Passwort eintragen und `Verbindung testen` klicken.
 
-Hinweis: Das Passwort wird derzeit in den lokalen App-Einstellungen gespeichert.
-Diese Datei gehoert niemals ins Repository. Fuer eine spaetere harte
-Produktversion waere der Windows Credential Manager die bessere Ablage.
+Hinweis: Unter Windows speichert die App das Synology/WebDAV-Passwort nach
+Moeglichkeit im Windows Credential Manager. In `settings.json` steht dann nur
+eine lokale Credential-Referenz. Falls der Credential Manager nicht verfuegbar
+ist, faellt die App auf lokale Einstellungen zurueck; diese Datei gehoert
+niemals ins Repository.
 
 ## Laufzeitdaten
 
@@ -293,11 +343,23 @@ legt bei vorhandenen Einstellungen eine Sicherung `settings.json.bak` an. So
 bleibt die letzte gueltige Konfiguration erhalten, falls ein Schreibvorgang
 abbricht.
 
+Synology/WebDAV-Passwoerter werden unter Windows beim Speichern in den Windows
+Credential Manager migriert. Bestehende Klartextwerte aus aelteren Versionen
+werden beim naechsten Speichern ersetzt; auch die automatisch erzeugte
+`settings.json.bak` wird dabei bereinigt.
+
 Pro Job erzeugt die App zusaetzlich ein Manifest. Bei erfolgreichen Jobs wird
 es unter `<Basisordner>/final/begleitdateien/*_job_manifest.json` abgelegt, bei
 fehlgeschlagenen Jobs im Error-Bereich. Darin stehen Eingabe-Hashes,
 Pipeline-Stages, erzeugte Ausgabepfade, Metadaten und optional Google-Drive-
-Upload-IDs.
+Upload-IDs. Google-Drive-Uploads unterscheiden zwischen `created` und `updated`,
+damit sichtbar bleibt, ob eine Datei neu angelegt oder auf Drive aktualisiert
+wurde.
+
+Bei lokalen Namenskonflikten im Zielordner bleibt die vorhandene Datei erhalten.
+Die neu erzeugte Datei erhaelt einen eindeutigen Konfliktnamen. Echte Duplikate
+werden in `<Basisordner>/final/_recovery` verschoben. Details stehen im
+Job-Manifest und im Debugbericht.
 
 Wenn `Debug-/Diagnoseberichte speichern` aktiviert ist, schreibt die App
 zusaetzlich `<Basisordner>/final/begleitdateien/*_debug_report.json`; bei
@@ -309,6 +371,11 @@ Passwoerter und Credentials werden redigiert.
 Die Datei `unified_ocr.sqlite3` enthaelt lokale Laufzeitdaten wie Job-Zustaende,
 Dokumentenindex, Duplikat-Referenzen und Review-Queue. Sie ist privat und sollte
 nicht veroeffentlicht werden.
+
+Ueber `Laufzeitdaten bereinigen...` in den System-Optionen koennen temporaere
+OCR-Artefakte aus `work`, fehlgeschlagene Job-Artefakte aus `error` und lokale
+Logs aus `logs` gezielt geloescht werden. Die App verweigert dabei unsichere
+Zielpfade und loescht weder `original` noch `final`.
 
 Der App-Ordner selbst sollte keine Tokens, Credentials, Logs oder lokalen
 Settings enthalten. Die `.gitignore` schliesst diese Dateien aus, eine manuelle
@@ -363,8 +430,9 @@ Vor einem Release:
 7. Ein Testdokument in den Eingangsordner legen.
 8. Ergebnisdateien, Qualitaetsbericht und Job-Historie pruefen.
 9. Job-Manifest im Ordner `begleitdateien` pruefen.
-10. Google Drive nur mit Testdaten pruefen.
-11. Sicherstellen, dass keine Dateien wie `settings.json`, `settings.json.bak`, `settings.json.tmp`, `llm_config.yaml`, `credentials.json`, `google_drive_token.json`, `token.json`, `.env`, `*.key`, `*.pem`, `*.sqlite3`, `*.log` oder `*.tmp` im Repository liegen.
+10. Namenskonflikt testen: gleiche Zieldatei erneut verarbeiten und Konfliktname/Manifest pruefen.
+11. Google Drive nur mit Testdaten pruefen und `created`/`updated` im Manifest kontrollieren.
+12. Sicherstellen, dass keine Dateien wie `settings.json`, `settings.json.bak`, `settings.json.tmp`, `llm_config.yaml`, `credentials.json`, `google_drive_token.json`, `token.json`, `.env`, `*.key`, `*.pem`, `*.sqlite3`, `*.log` oder `*.tmp` im Repository liegen.
 
 ## Bekannte Grenzen
 
@@ -373,5 +441,5 @@ Vor einem Release:
 - Cloud- und API-Provider koennen Kosten verursachen oder Kontingente begrenzen.
 - Google Drive Sync erstellt fehlende Ordner und speichert Drive-IDs, loescht aber keine Drive-Ordner.
 - Synology/WebDAV Sync erstellt fehlende Ordner und laedt Dateien in die gleiche Zielstruktur hoch.
-- Der finale PDF-Textlayer wird blockweise aufgebaut. Bei typischen zweispaltigen Seiten wird links vor rechts gelesen; sehr komplexe Layouts sollten weiterhin stichprobenartig geprueft werden.
-- Wenn die dokumentweite Qualitaetskorrektur Text veraendert, bleibt der PDF-Textlayer seitenweise aus der urspruenglichen Fusion erhalten; der korrigierte Gesamttext wird fuer TXT/DOCX/Metadaten genutzt.
+- Der finale PDF-Textlayer stammt ausschliesslich von OCRmyPDF; KI-Text bleibt ein separates TXT-/DOCX-Derivat. Komplexe Layouts und schlechte Vorlagen sollten am unveraenderten Original stichprobenartig geprueft werden.
+- Die Qualitaetskontrolle veraendert keine Werte automatisch. Quellenkonflikte, Ziffernverluste und unbelegte Werte werden als Reviewgrund ausgewiesen.
